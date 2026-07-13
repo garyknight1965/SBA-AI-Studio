@@ -1,0 +1,12 @@
+{
+    "project_name": "ABR Festival",
+
+    "bins": [
+        "GoPro",
+        "DJI Flip",
+        "Insta360",
+        "Drone",
+        "Audio",
+        "Exports"
+    ]
+}

@@ -1,0 +1,5 @@
+resolve:
+  module_path: "C:/ProgramData/Blackmagic Design/DaVinci Resolve/Support/Developer/Scripting/Modules"
+
+media:
+  root: "D:/Movies/ABR"

@@ -1,0 +1,13 @@
+{
+    "name": "ABR Festival 2026",
+    "created": "2026-07-11T10:02:04.177672",
+    "media_folder": "D:\\Movies\\ABR",
+    "clip_count": 19,
+    "cameras": {
+        "DJI Flip": 5,
+        "Unknown": 1,
+        "GoPro HERO13 Black": 6,
+        "DJI Cache": 1,
+        "Insta360 X3": 6
+    }
+}

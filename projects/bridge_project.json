@@ -1,0 +1,19 @@
+{
+    "project_name": "ABR Festival",
+    "bins": [
+        "GoPro",
+        "DJI Flip",
+        "Insta360",
+        "Drone",
+        "Audio"
+    ],
+    "media": [
+    {
+        "file": "D:/Movies/ABR/dji_fly_20260626_094438_0003_1782678184477_video_beautify.mp4",
+        "bin": "DJI Flip",
+        "camera": "DJI Flip"
+    }
+],
+    "markers": [],
+    "timeline": []
+}
