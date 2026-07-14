@@ -42,10 +42,12 @@ class FakeClip:
 
 class FakeTimeline:
 
-    def __init__(self, name):
+    def __init__(self, name, timeline_fps="24"):
         self.name = name
         self.track_counts = {"video": 1}
         self.track_names = {}
+        self.markers = {}
+        self.timeline_fps = timeline_fps
 
     def GetName(self):
         return self.name
@@ -62,6 +64,23 @@ class FakeTimeline:
     def SetTrackName(self, track_type, index, name):
         self.track_names[(track_type, index)] = name
         return True
+
+    def AddMarker(self, frame_id, color, name, note, duration, custom_data=None):
+        if frame_id in self.markers:
+            return False
+        self.markers[frame_id] = {
+            "color": color,
+            "name": name,
+            "note": note,
+            "duration": duration,
+            "customData": custom_data or "",
+        }
+        return True
+
+    def GetSetting(self, key):
+        if key == "timelineFrameRate":
+            return self.timeline_fps
+        return None
 
 
 class FakeProject:
@@ -115,7 +134,7 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
         "PlanningResult, against fake Resolve API objects."
     )
 
-    def _make_media(self, filename, camera_model, created, duration_seconds, fps=25.0):
+    def _make_media(self, filename, camera_model, created, duration_seconds, fps=29.97):
 
         from sba_resolve.core.models.camera_profile import (
             CameraManufacturer,
@@ -250,9 +269,10 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
                 "No track was named for the Hero8 camera."
             )
 
-        # recordFrame values must be present and gap-preserving
-        # (hero8's clip started 95s after project start, not
-        # immediately after hero13's clips).
+        # recordFrame and duration must be computed using the
+        # TIMELINE's fps (24, per FakeTimeline.timeline_fps), NOT
+        # the clip's own native fps (29.97, per _make_media's
+        # default) and NOT the old hardcoded 25fps default.
         hero8_items = [
             item for item in items
             if item["mediaPoolItem"].filename == "hero8_0001.mp4"
@@ -261,10 +281,34 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
         if not hero8_items:
             raise RuntimeError("Hero8 clip missing from append items.")
 
-        expected_frame = round(95 * 25.0)
+        timeline_fps = 24.0
+
+        expected_frame = round(95 * timeline_fps)
 
         if hero8_items[0]["recordFrame"] != expected_frame:
             raise RuntimeError(
-                f"Expected Hero8 recordFrame {expected_frame}, "
-                f"got {hero8_items[0]['recordFrame']}."
+                f"Expected Hero8 recordFrame {expected_frame} "
+                f"(95s at the timeline's 24fps), got "
+                f"{hero8_items[0]['recordFrame']}. recordFrame "
+                f"must use the real timeline fps, not the clip's "
+                f"native fps or a hardcoded default."
+            )
+
+        # This fixture has no camera overlap, so only the Ride Day
+        # 1 marker should have been written (at frame 0).
+        if len(timeline.markers) != 1:
+            raise RuntimeError(
+                f"Expected 1 marker written to the timeline, got "
+                f"{len(timeline.markers)}."
+            )
+
+        if 0 not in timeline.markers:
+            raise RuntimeError(
+                "Expected a marker at frame 0 (Ride Day 1)."
+            )
+
+        if timeline.markers[0]["name"] != "Ride Day 1":
+            raise RuntimeError(
+                f"Expected marker at frame 0 named 'Ride Day 1', "
+                f"got {timeline.markers[0]['name']!r}."
             )

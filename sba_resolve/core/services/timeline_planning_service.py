@@ -64,15 +64,23 @@ class TimelinePlanningService:
         placement_builder: TimelinePlacementBuilder | None = None,
         multicam_detector: MulticamDetector | None = None,
         marker_generator: TimelineMarkerGenerator | None = None,
+        fps: float | None = None,
     ) -> None:
 
+        # The real Resolve timeline frame rate, if known at call
+        # time (read from Resolve in create_timeline.py). Passed
+        # to both the placement builder and multicam detector so
+        # they can't disagree with each other. Ignored for any
+        # service passed in explicitly (assumed pre-configured).
         self.timeline_sorter = timeline_sorter or TimelineSorter()
         self.day_detector = day_detector or DayDetector()
         self.segment_builder = segment_builder or PlanningSegmentBuilder()
         self.placement_builder = (
-            placement_builder or TimelinePlacementBuilder()
+            placement_builder or TimelinePlacementBuilder(fps=fps)
         )
-        self.multicam_detector = multicam_detector or MulticamDetector()
+        self.multicam_detector = (
+            multicam_detector or MulticamDetector(fps=fps)
+        )
         self.marker_generator = (
             marker_generator or TimelineMarkerGenerator()
         )

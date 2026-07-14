@@ -28,12 +28,20 @@ from typing import Iterable
 
 from sba_resolve.core.models.multicam_candidate import MulticamCandidate
 from sba_resolve.core.models.timeline_placement import TimelinePlacement
+from sba_resolve.core.services.timeline_fps import DEFAULT_PROJECT_FPS
 
 
 class MulticamDetector:
     """
     Detects overlapping-camera windows from TimelinePlacements.
     """
+
+    def __init__(self, fps: float | None = None) -> None:
+
+        # Must match whatever fps TimelinePlacementBuilder used to
+        # compute record_frame, or the anchor-based frame
+        # conversion below will disagree with the actual timeline.
+        self.fps = fps if fps and fps > 0 else DEFAULT_PROJECT_FPS
 
     def detect(
         self,
@@ -45,6 +53,14 @@ class MulticamDetector:
         if not placements:
             return []
 
+        # Every placement shares the same project_start and the
+        # same DEFAULT_PROJECT_FPS (see TimelinePlacementBuilder),
+        # so any single placement's (created, record_frame) pair
+        # anchors the same linear real-time -> frame mapping for
+        # the whole project. Used to convert overlap-window
+        # boundaries (computed in real time) back to frames.
+        anchor = placements[0]
+
         by_day: dict[int, list[TimelinePlacement]] = defaultdict(list)
 
         for placement in placements:
@@ -53,13 +69,30 @@ class MulticamDetector:
         candidates: list[MulticamCandidate] = []
 
         for ride_day in sorted(by_day):
-            candidates.extend(self._detect_for_day(by_day[ride_day]))
+            candidates.extend(
+                self._detect_for_day(by_day[ride_day], anchor)
+            )
 
         return candidates
+
+    def _frame_for_time(
+        self,
+        time: datetime,
+        anchor: TimelinePlacement,
+    ) -> int:
+
+        offset_seconds = (
+            time - anchor.media_file.created
+        ).total_seconds()
+
+        return anchor.record_frame + round(
+            offset_seconds * self.fps
+        )
 
     def _detect_for_day(
         self,
         day_placements: list[TimelinePlacement],
+        anchor: TimelinePlacement,
     ) -> list[MulticamCandidate]:
 
         intervals = []
@@ -151,13 +184,8 @@ class MulticamDetector:
                 continue
 
             candidate = MulticamCandidate(
-                start_frame=min(
-                    p.record_frame for p in window_placements
-                ),
-                end_frame=max(
-                    p.record_frame + p.duration_frames
-                    for p in window_placements
-                ),
+                start_frame=self._frame_for_time(window_start, anchor),
+                end_frame=self._frame_for_time(window_end, anchor),
                 confidence=1.0,
                 reason=(
                     "Overlapping capture: "
