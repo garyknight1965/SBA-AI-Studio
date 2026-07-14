@@ -2,77 +2,94 @@
 ============================================================
 SBA AI Studio
 Planning Segment Builder
-ML-011-015A
-Version : 3.0.0 Alpha
+ML-011-012B
+Version : 2.0.0 Alpha
 ============================================================
 
-Creates PlanningSegment objects from RideDay objects.
+Creates PlanningSegment objects from chronologically
+sorted MediaFile objects.
 
-Each RideDay is converted into one or more PlanningSegments.
+Version 2 groups consecutive clips recorded by the
+same camera.
 
-Version 3 groups consecutive clips recorded by the same
-camera within each ride day.
-
-Future versions will merge clips based on timestamp overlap
-and active camera sets.
+Future versions will merge clips based on timestamp
+overlap and active camera sets.
 """
 
 from __future__ import annotations
 
 from typing import Iterable
 
+from sba_resolve.core.models.media_file import MediaFile
 from sba_resolve.core.models.planning_segment import PlanningSegment
-from sba_resolve.core.models.ride_day import RideDay
 
 
 class PlanningSegmentBuilder:
     """
-    Builds PlanningSegment objects from RideDay objects.
+    Builds PlanningSegment objects.
+
+    Version 2 groups consecutive clips belonging to the
+    same camera.
     """
 
     def build(
         self,
-        ride_days: Iterable[RideDay],
+        media_files: Iterable[MediaFile],
+        ride_day: int = 1,
     ) -> list[PlanningSegment]:
+        """
+        Build PlanningSegments from chronologically sorted media.
+
+        Parameters
+        ----------
+        media_files
+            Chronologically sorted MediaFile objects, normally the
+            clips belonging to a single RideDay.
+        ride_day
+            The RideDay index these clips belong to. Stamped onto
+            every resulting PlanningSegment. Defaults to 1 to
+            preserve existing single-day behaviour.
+        """
+
+        media = list(media_files)
+
+        if not media:
+            return []
 
         segments: list[PlanningSegment] = []
 
-        for ride_day in ride_days:
+        current_segment = PlanningSegment(ride_day=ride_day)
 
-            current_segment: PlanningSegment | None = None
-            current_camera: str | None = None
+        current_camera = self._camera_signature(media[0])
 
-            for media in ride_day.clips:
+        for clip in media:
 
-                camera = self._camera_signature(media)
+            camera = self._camera_signature(clip)
 
-                if (
-                    current_segment is None
-                    or camera != current_camera
-                ):
+            if camera != current_camera:
 
-                    current_segment = PlanningSegment(
-                        ride_day=ride_day.index
-                    )
+                segments.append(current_segment)
 
-                    segments.append(current_segment)
+                current_segment = PlanningSegment(ride_day=ride_day)
 
-                    current_camera = camera
+                current_camera = camera
 
-                current_segment.add_clip(media)
+            current_segment.add_clip(clip)
+
+        segments.append(current_segment)
 
         return segments
 
     @staticmethod
-    def _camera_signature(media) -> str:
+    def _camera_signature(media: MediaFile) -> str:
         """
-        Return the logical camera identity.
+        Returns the logical camera identity.
 
-        Future versions may expand this to include:
-        - Audio source
-        - Drone
-        - 360 camera
-        - Transcript availability
+        Future versions may include:
+            - Audio source
+            - 360 camera
+            - Drone
+            - Transcript availability
         """
 
         return (

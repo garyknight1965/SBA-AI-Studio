@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Iterable
 
-from core.models.ride_day import RideDay
+from sba_resolve.core.models.ride_day import RideDay
 
 
 class DayDetector:
@@ -22,24 +22,24 @@ class DayDetector:
     def detect(self, media_files: Iterable):
         media = [
             m for m in media_files
-            if getattr(m, "capture_time", None) is not None
+            if getattr(m, "created", None) is not None
         ]
 
         if not media:
             return []
 
-        media.sort(key=lambda m: m.capture_time)
+        media.sort(key=lambda m: m.created)
 
         ride_days = []
 
         current_clips = [media[0]]
-        current_start = media[0].capture_time
-        previous_time = media[0].capture_time
+        current_start = media[0].created
+        previous_time = media[0].created
 
         day_index = 1
 
         for clip in media[1:]:
-            gap = clip.capture_time - previous_time
+            gap = clip.created - previous_time
 
             if gap > self.max_gap:
                 ride_days.append(
@@ -53,11 +53,11 @@ class DayDetector:
 
                 day_index += 1
                 current_clips = [clip]
-                current_start = clip.capture_time
+                current_start = clip.created
             else:
                 current_clips.append(clip)
 
-            previous_time = clip.capture_time
+            previous_time = clip.created
 
         ride_days.append(
             RideDay(
