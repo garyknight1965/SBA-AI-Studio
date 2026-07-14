@@ -3,7 +3,7 @@
 SBA AI Studio
 Timeline Placement Builder
 ML-011-014
-Version : 3.0.0 Alpha
+Version : 3.1.0 Alpha
 ============================================================
 
 Creates fully populated TimelinePlacement objects from
@@ -11,6 +11,11 @@ PlanningSegments.
 
 This service calculates timeline placement information but
 does not communicate with DaVinci Resolve.
+
+Version 3.1 adds stable per-camera track assignment (the same
+camera always lands on the same track across the whole
+project) on top of the existing gap-preserving, real-ride-time
+frame placement.
 """
 
 from __future__ import annotations
@@ -32,6 +37,21 @@ class TimelinePlacementBuilder:
 
     DEFAULT_FPS = 25.0
 
+    # Preferred, stable track order. Matches
+    # CameraTrackBuilder.DEFAULT_ORDER so planning and Resolve
+    # track assignment agree with each other.
+    DEFAULT_CAMERA_ORDER = [
+        "GoPro HERO13 Black",
+        "GoPro HERO8 Black",
+        "Insta360 X3",
+        "DJI Flip",
+        "Unknown Camera",
+    ]
+
+    def __init__(self, camera_order: list[str] | None = None) -> None:
+
+        self.camera_order = camera_order or list(self.DEFAULT_CAMERA_ORDER)
+
     def build(
         self,
         segments: Iterable[PlanningSegment],
@@ -48,6 +68,10 @@ class TimelinePlacementBuilder:
             media_files.extend(segment.available_clips)
 
         project_start = ProjectTimeService.project_start(media_files)
+
+        # camera name -> track index, discovered as new cameras
+        # appear. Stable for the lifetime of this build() call.
+        track_index_by_camera: dict[str, int] = {}
 
         placements: list[TimelinePlacement] = []
 
@@ -73,7 +97,10 @@ class TimelinePlacementBuilder:
                     "",
                 )
 
-                placement.track_index = 1
+                placement.track_index = self._track_index_for(
+                    placement.camera_name,
+                    track_index_by_camera,
+                )
 
                 placement.record_frame = self._record_frame(
                     media,
@@ -87,6 +114,37 @@ class TimelinePlacementBuilder:
                 placements.append(placement)
 
         return placements
+
+    def _track_index_for(
+        self,
+        camera_name: str,
+        track_index_by_camera: dict[str, int],
+    ) -> int:
+        """
+        Return a stable track index for a camera, assigning new
+        indexes as previously-unseen cameras are encountered.
+        """
+
+        if camera_name in track_index_by_camera:
+            return track_index_by_camera[camera_name]
+
+        if camera_name in self.camera_order:
+            index = self.camera_order.index(camera_name) + 1
+        else:
+            # Unrecognised camera: append after all known slots.
+            unrecognised_already_assigned = [
+                c for c in track_index_by_camera
+                if c not in self.camera_order
+            ]
+            index = (
+                len(self.camera_order)
+                + len(unrecognised_already_assigned)
+                + 1
+            )
+
+        track_index_by_camera[camera_name] = index
+
+        return index
 
     def _record_frame(
         self,

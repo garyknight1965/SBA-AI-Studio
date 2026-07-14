@@ -3,7 +3,7 @@
 SBA AI Studio
 Planning Pipeline Regression Test
 ML-011
-Version : 1.0.0
+Version : 2.0.0
 ============================================================
 
 Verifies the full Ride Reconstruction pipeline:
@@ -12,6 +12,11 @@ Verifies the full Ride Reconstruction pipeline:
 
 Uses synthetic MediaFile objects so this test is fully portable
 and does not depend on real footage being present on disk.
+
+Version 2 validates the real (ProjectTimeService-based)
+gap-preserving placement semantics: record_frame reflects true
+elapsed seconds since the project's earliest clip, and track
+assignment is stable per camera across ride days.
 """
 
 from __future__ import annotations
@@ -30,8 +35,8 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
 
     description = (
         "Verify MediaLibrary -> TimelinePlanningService.plan() "
-        "produces a correct PlanningResult across two ride days "
-        "and two cameras."
+        "produces a correct, gap-preserving PlanningResult across "
+        "two ride days and two cameras."
     )
 
     def _make_media(
@@ -85,7 +90,7 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
         day1_start = datetime(2026, 7, 1, 9, 0, 0)
 
         # Ride day 1: Hero13 (with lav mic / transcript source),
-        # then Hero8, back-to-back.
+        # then Hero8, back-to-back with small real-world gaps.
         library.add(
             self._make_media(
                 "hero13_0001.mp4",
@@ -112,7 +117,9 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
         )
 
         # Ride day 2: gap of 6 hours (> DayDetector.DEFAULT_MAX_GAP
-        # of 4 hours) so this must become a separate RideDay.
+        # of 4 hours) so this must become a separate RideDay, while
+        # placement still reflects true elapsed time since the
+        # project's very first clip (gap-preserving design).
         day2_start = day1_start + timedelta(hours=6)
 
         library.add(
@@ -162,64 +169,70 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
                 f"{len(result.placements)}."
             )
 
-        # Verify sequential placement math on ride day 1, Hero13
-        # track: first clip at frame 0, second clip starts where
-        # the first one ends (60s * 25fps = 1500 frames).
-        hero13_day1 = [
-            p for p in result.placements
-            if p.ride_day == 1 and p.camera_name == "GoPro HERO13 Black"
-        ]
+        by_clip = {p.clip_name: p for p in result.placements}
 
-        hero13_day1.sort(key=lambda p: p.record_frame)
+        # project_start = the earliest clip in the whole project
+        # (hero13_0001.mp4). Every record_frame is relative to it.
+        fps = 25.0
 
-        if len(hero13_day1) != 2:
+        expected_frames = {
+            "hero13_0001.mp4": 0,
+            "hero13_0002.mp4": round(61 * fps),
+            "hero8_0001.mp4": round(95 * fps),
+            "hero13_0003.mp4": round(
+                timedelta(hours=6).total_seconds() * fps
+            ),
+        }
+
+        for clip_name, expected_frame in expected_frames.items():
+
+            placement = by_clip.get(clip_name)
+
+            if placement is None:
+                raise RuntimeError(
+                    f"No placement produced for {clip_name}."
+                )
+
+            if placement.record_frame != expected_frame:
+                raise RuntimeError(
+                    f"{clip_name}: expected record_frame "
+                    f"{expected_frame} (gap-preserving, relative "
+                    f"to project start), got "
+                    f"{placement.record_frame}."
+                )
+
+        # Ride day stamping must be correct.
+        if by_clip["hero13_0003.mp4"].ride_day != 2:
             raise RuntimeError(
-                "Expected 2 Hero13 placements on ride day 1."
+                "hero13_0003.mp4 should belong to ride day 2."
             )
 
-        if hero13_day1[0].record_frame != 0:
-            raise RuntimeError(
-                "First clip on a track must start at frame 0."
-            )
-
-        expected_second_start = hero13_day1[0].duration_frames
-
-        if hero13_day1[1].record_frame != expected_second_start:
-            raise RuntimeError(
-                "Second clip did not start where the first "
-                "clip's duration ended (sequential placement)."
-            )
-
-        # Ride day 2 must reset its frame cursor independently of
-        # ride day 1.
-        hero13_day2 = [
-            p for p in result.placements
-            if p.ride_day == 2 and p.camera_name == "GoPro HERO13 Black"
-        ]
-
-        if len(hero13_day2) != 1:
-            raise RuntimeError(
-                "Expected 1 Hero13 placement on ride day 2."
-            )
-
-        if hero13_day2[0].record_frame != 0:
-            raise RuntimeError(
-                "Ride day 2 frame cursor did not reset to 0."
-            )
+        for clip_name in (
+            "hero13_0001.mp4",
+            "hero13_0002.mp4",
+            "hero8_0001.mp4",
+        ):
+            if by_clip[clip_name].ride_day != 1:
+                raise RuntimeError(
+                    f"{clip_name} should belong to ride day 1."
+                )
 
         # Hero13 and Hero8 must land on different, stable tracks.
-        hero8_day1 = [
-            p for p in result.placements
-            if p.camera_name == "GoPro HERO8 Black"
-        ]
+        hero13_track = by_clip["hero13_0001.mp4"].track_index
+        hero8_track = by_clip["hero8_0001.mp4"].track_index
 
-        if not hero8_day1:
-            raise RuntimeError("No Hero8 placements produced.")
-
-        if hero8_day1[0].track_index == hero13_day1[0].track_index:
+        if hero13_track == hero8_track:
             raise RuntimeError(
                 "Hero13 and Hero8 clips were placed on the same "
                 "track."
+            )
+
+        # Track assignment must be stable for the same camera
+        # across ride days.
+        if by_clip["hero13_0003.mp4"].track_index != hero13_track:
+            raise RuntimeError(
+                "Hero13's track index changed between ride days; "
+                "track assignment must be stable per camera."
             )
 
         # Transcript availability: Hero13 segments should be
