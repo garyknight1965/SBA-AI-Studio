@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sba_resolve.core.models.workspace import Workspace
-from sba_resolve.core.scanner.project_scanner import ProjectScanner
+from sba_resolve.core.project_scanner import ProjectScanner
 from sba_resolve.core.metadata.exiftool_engine import ExifToolEngine
 from sba_resolve.core.metadata.metadata_mapper import MetadataMapper
 
