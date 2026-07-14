@@ -127,3 +127,94 @@ def main():
         print("WARNING: Could not read Clip A position after append.")
 
     # ----------------------------------------
+    # Step 2: append Clip B at an exact frame position, leaving
+    # a deliberate gap after Clip A, using the "recordFrame" key
+    # ----------------------------------------
+
+    target_frame = None
+    actual_start = None
+
+    if end_of_a is None:
+        print(
+            "Skipping Step 2: Clip A's end frame is unknown, so "
+            "there's nothing to measure the gap against."
+        )
+    else:
+        target_frame = end_of_a + GAP_FRAMES
+
+        print()
+        print(f"Requesting Clip B at frame : {target_frame}")
+        print(f"(Clip A ends at {end_of_a}, "
+              f"+ {GAP_FRAMES} frame gap)")
+
+        result_b = media_pool.AppendToTimeline(
+            [
+                {
+                    "mediaPoolItem": clip_b,
+                    "trackIndex": 3,
+                    "recordFrame": target_frame,
+                }
+            ]
+        )
+
+        print("Append Clip B (with recordFrame) :", bool(result_b))
+
+        items_after_b = timeline.GetItemListInTrack("video", 3)
+
+        clip_b_item = None
+        for item in items_after_b:
+            if item.GetName() == clip_b.GetName():
+                clip_b_item = item
+
+        if clip_b_item is not None:
+            actual_start = clip_b_item.GetStart()
+            print(f"Clip B actual start frame : {actual_start}")
+
+            gap_achieved = actual_start - end_of_a
+
+            print(f"Actual gap after Clip A  : {gap_achieved} frames")
+        else:
+            print(
+                "WARNING: Could not find Clip B on track 3 "
+                "after append."
+            )
+
+    # ----------------------------------------
+    # Verdict
+    # ----------------------------------------
+
+    print()
+    print("=" * 60)
+    print("VERDICT")
+    print("=" * 60)
+
+    if end_of_a is None or target_frame is None:
+        print("INCONCLUSIVE - could not read Clip A's end position.")
+    elif actual_start is None:
+        print("INCONCLUSIVE - could not read Clip B's placed position.")
+    elif actual_start == target_frame:
+        print(
+            "SUPPORTED - AppendToTimeline's 'recordFrame' key placed "
+            "the clip at the exact requested frame, preserving a "
+            f"real {GAP_FRAMES}-frame gap."
+        )
+        print(
+            "The Resolve Timeline Builder can use recordFrame + "
+            "trackIndex directly from TimelinePlacement objects."
+        )
+    else:
+        print(
+            "NOT SUPPORTED AS EXPECTED - Clip B landed at frame "
+            f"{actual_start}, not the requested {target_frame}."
+        )
+        print(
+            "AppendToTimeline ignored/adjusted recordFrame. A "
+            "different API approach (e.g. placing then manually "
+            "repositioning via timeline item move calls) will be "
+            "needed for gap-preserving placement."
+        )
+
+    print("=" * 60)
+
+
+main()
