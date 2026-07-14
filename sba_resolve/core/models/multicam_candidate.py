@@ -45,8 +45,29 @@ class MulticamCandidate:
         return max(0, self.end_frame - self.start_frame)
 
     @property
+    def camera_names(self) -> list[str]:
+        """
+        Return the distinct camera names represented in this
+        candidate's clips, alphabetically sorted.
+        """
+
+        names = {
+            getattr(media, "camera_display_name", None)
+            or getattr(media, "camera_model", None)
+            or "Unknown"
+            for media in self.clips
+        }
+
+        return sorted(names)
+
+    @property
     def camera_count(self) -> int:
-        return len(self.clips)
+        """
+        Number of distinct cameras represented, not the number
+        of clips (a single camera can contribute more than one
+        clip to the same overlap window).
+        """
+        return len(self.camera_names)
 
     @property
     def is_valid(self) -> bool:
