@@ -57,6 +57,7 @@ from sba_resolve.core.project_scanner import ProjectScanner
 from sba_resolve.core.services.gopro_chapter_resequencer import (
     GoProChapterResequencer,
 )
+from sba_resolve.core.services.gpx_gps_loader import GpxGpsLoader
 from sba_resolve.core.services.insta360_view_assigner import (
     Insta360ViewAssigner,
 )
@@ -84,6 +85,8 @@ class MediaImportPipeline:
         self.view_assigner = Insta360ViewAssigner()
 
         self.chapter_resequencer = GoProChapterResequencer()
+
+        self.gpx_gps_loader = GpxGpsLoader()
 
         # Populated by the most recent import_folder() call, so
         # callers (CLI, GUI) can print or inspect what was
@@ -167,6 +170,14 @@ class MediaImportPipeline:
         # --------------------------------------------------
 
         self.chapter_resequencer.resequence(media)
+
+        # --------------------------------------------------
+        # Step 8
+        # Load GPS from sibling .gpx files (fallback for footage
+        # without embedded GPS metadata, e.g. most GoPro clips)
+        # --------------------------------------------------
+
+        self.gpx_gps_loader.load(media)
 
         return media
 

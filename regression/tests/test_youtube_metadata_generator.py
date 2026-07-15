@@ -161,3 +161,47 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
             raise RuntimeError(
                 "title should be None when parsing fails."
             )
+
+        # --------------------------------------------------
+        # 4. A day with NO identified places must explicitly
+        #    tell the model not to invent one, rather than
+        #    silently omitting the "places" field and leaving a
+        #    gap the model fills with a guess (this is what let
+        #    an earlier real run hallucinate "Normandy Coast"
+        #    for a ride with no GPS data at all).
+        # --------------------------------------------------
+
+        no_places_summary = {
+            "total_days": 1,
+            "days": [
+                {
+                    "day": 1,
+                    "date": "2026-07-12",
+                    "duration_minutes": 66.0,
+                    "cameras": ["GoPro HERO13 Black"],
+                    "scene_count": 4,
+                    "places": [],
+                }
+            ],
+        }
+
+        generator4 = YouTubeMetadataGenerator(
+            ollama_client=FakeOllamaClient(clean_json)
+        )
+
+        generator4.generate(no_places_summary, "Sunday ride")
+
+        prompt = generator4.ollama_client.last_prompt
+
+        if "NONE IDENTIFIED" not in prompt:
+            raise RuntimeError(
+                "A day with no identified places must explicitly "
+                "tell the model not to invent one - found no "
+                "'NONE IDENTIFIED' marker in the prompt."
+            )
+
+        if "do not invent" not in prompt.lower():
+            raise RuntimeError(
+                "Prompt is missing the explicit anti-hallucination "
+                "instruction."
+            )

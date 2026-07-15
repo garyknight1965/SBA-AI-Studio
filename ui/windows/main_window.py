@@ -17,9 +17,11 @@ from controllers.workspace_controller import WorkspaceController
 from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
+    load_ollama_model,
 )
 from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
+from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
 from sba_resolve.connector import ResolveConnector
 
 
@@ -52,11 +54,22 @@ class MainWindow(QMainWindow):
         self.docks = DockManager(self)
         self.docks.build(self.workspace)
 
+        self.docks.youtube_panel.generate_requested.connect(
+            self.generate_youtube_metadata
+        )
+
+        # Held here so the QThread isn't garbage-collected mid-run.
+        self._youtube_worker = None
+
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction("Open Project...", self.open_project)
         file_menu.addAction("Scan Project", self.scan_project)
         file_menu.addAction("Import to Resolve", self.import_to_resolve)
+        file_menu.addSeparator()
+        file_menu.addAction(
+            "Generate YouTube Metadata", self.generate_youtube_metadata
+        )
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -182,6 +195,72 @@ class MainWindow(QMainWindow):
                 "Resolve Import Error",
                 str(exc),
             )
+
+    def generate_youtube_metadata(self):
+        """
+        Runs YouTube metadata generation on a background thread
+        (Planning Engine -> ride summary -> local Ollama model),
+        so a slow model load or an unreachable Ollama instance
+        doesn't freeze the GUI. This never touches Resolve at
+        all - it works even with timeline creation disabled or
+        Resolve not connected.
+        """
+
+        if (
+            not getattr(self.workspace, "media", None)
+            or self.workspace.is_empty
+        ):
+            QMessageBox.information(
+                self,
+                "Nothing to summarise",
+                "Scan the project before generating YouTube metadata.",
+            )
+            return
+
+        if self._youtube_worker is not None and (
+            self._youtube_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Already generating",
+                "A YouTube metadata generation request is already "
+                "in progress.",
+            )
+            return
+
+        self.docks.youtube_panel.set_generating(True)
+        self.statusBar().showMessage("Generating YouTube metadata...")
+
+        self._youtube_worker = YouTubeMetadataWorker(
+            media_list=list(self.workspace.media),
+            project_name=self.workspace.project_name,
+            model=load_ollama_model(),
+        )
+        self._youtube_worker.succeeded.connect(
+            self._on_youtube_metadata_succeeded
+        )
+        self._youtube_worker.failed.connect(
+            self._on_youtube_metadata_failed
+        )
+        self._youtube_worker.start()
+
+    def _on_youtube_metadata_succeeded(self, metadata: dict):
+        self.docks.youtube_panel.set_generating(False)
+        self.docks.youtube_panel.set_metadata(metadata)
+
+        if metadata.get("parse_error"):
+            self.statusBar().showMessage(
+                "YouTube metadata generated, but the model's "
+                "response wasn't clean JSON - showing raw output."
+            )
+        else:
+            self.statusBar().showMessage("YouTube metadata generated.")
+
+    def _on_youtube_metadata_failed(self, message: str):
+        self.docks.youtube_panel.set_generating(False)
+        self.docks.youtube_panel.set_error(message)
+        self.statusBar().showMessage("YouTube metadata generation failed.")
+        QMessageBox.critical(self, "YouTube Metadata Error", message)
 
 
 if __name__ == "__main__":

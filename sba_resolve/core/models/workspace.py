@@ -34,7 +34,7 @@ class Workspace:
 
     @property
     def is_empty(self) -> bool:
-        return self.media.is_empty
+        return len(self.media) == 0
 
     @property
     def total_files(self) -> int:

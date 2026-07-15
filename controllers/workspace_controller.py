@@ -1,7 +1,7 @@
 """
 Workspace Controller
-Version 5.2.0
-ML-022 GoPro Chapter Resequencing
+Version 5.3.0
+ML-029 GPX GPS Loading
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from sba_resolve.core.metadata.metadata_mapper import MetadataMapper
 from sba_resolve.core.services.gopro_chapter_resequencer import (
     GoProChapterResequencer,
 )
+from sba_resolve.core.services.gpx_gps_loader import GpxGpsLoader
 from sba_resolve.core.services.insta360_view_assigner import (
     Insta360ViewAssigner,
 )
@@ -33,6 +34,7 @@ class WorkspaceController:
         self.validator = SourceMediaValidator()
         self.view_assigner = Insta360ViewAssigner()
         self.chapter_resequencer = GoProChapterResequencer()
+        self.gpx_gps_loader = GpxGpsLoader()
 
         # Populated by the most recent scan_project() call, so
         # callers (CLI, GUI) can inspect or display what was
@@ -102,6 +104,30 @@ class WorkspaceController:
             # --------------------------------------------------
 
             self.chapter_resequencer.resequence(media)
+
+            # --------------------------------------------------
+            # Load GPS from sibling .gpx files (e.g.
+            # GH010167.MP4 -> GH010167.gpx) for footage without
+            # embedded GPS metadata - most GoPro clips don't
+            # expose GPS as a simple EXIF tag, so a separate GPX
+            # telemetry export is often the only source.
+            # --------------------------------------------------
+
+            gps_before = sum(
+                1 for m in media if m.gps_latitude is not None
+            )
+
+            self.gpx_gps_loader.load(media)
+
+            gps_after = sum(
+                1 for m in media if m.gps_latitude is not None
+            )
+
+            if gps_after > gps_before:
+                print(
+                    f"[SBA] GPX GPS loaded for "
+                    f"{gps_after - gps_before} clip(s)"
+                )
 
             print(f"[SBA] Mapper produced {len(media)} MediaFile objects")
             if media:

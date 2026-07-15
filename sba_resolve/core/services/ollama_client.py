@@ -59,6 +59,7 @@ class OllamaClient:
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
+                "format": "json",
             }
         ).encode("utf-8")
 

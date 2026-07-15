@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sba_resolve.core.media_import_pipeline import MediaImportPipeline
+from sba_resolve.core.services.app_settings import load_ollama_model
 from sba_resolve.core.services.ollama_client import OllamaClient, OllamaError
 from sba_resolve.core.services.ride_summary_builder import RideSummaryBuilder
 from sba_resolve.core.services.timeline_planning_service import (
@@ -39,8 +40,9 @@ from sba_resolve.core.services.youtube_metadata_generator import (
     YouTubeMetadataGenerator,
 )
 
-# Change this to whatever model you have pulled in Ollama.
-MODEL_NAME = "llama3.2"
+# Reads from config/settings.json ("ollama_model") - defaults to
+# "llama3.2" if unset. Edit settings.json rather than this file.
+MODEL_NAME = load_ollama_model()
 
 
 def main() -> int:

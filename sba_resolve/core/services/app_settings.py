@@ -15,6 +15,7 @@ Currently exposes:
 
     load_gap_compression_settings() -> GapCompressionSettings
     load_timeline_creation_enabled() -> bool
+    load_ollama_model() -> str
 
 To turn Gap Compression on, edit config/settings.json:
 
@@ -41,6 +42,13 @@ code at all), set:
 
 Timeline creation is ON by default (an absent or malformed key
 reproduces the original, always-create-a-timeline behaviour).
+
+To use a different Ollama model for YouTube metadata generation
+than the default ("llama3.2"), set:
+
+    {
+        "ollama_model": "llama3.1:8b"
+    }
 """
 
 from __future__ import annotations
@@ -124,5 +132,32 @@ def load_timeline_creation_enabled(
 
     if not isinstance(value, bool):
         return True
+
+    return value
+
+
+def load_ollama_model(path: Path | None = None) -> str:
+    """
+    Reads "ollama_model" from config/settings.json.
+
+    Returns "llama3.2" (a small, widely-available default model)
+    if the file is missing, isn't valid JSON, doesn't contain
+    that key, or the value isn't a non-empty string - this never
+    raises.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    default_model = "llama3.2"
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_model
+
+    value = raw.get("ollama_model", default_model)
+
+    if not isinstance(value, str) or not value.strip():
+        return default_model
 
     return value
