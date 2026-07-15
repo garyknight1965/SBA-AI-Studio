@@ -1,0 +1,589 @@
+Absolutely. After everything we've discussed, I would **change the direction of the project**. This is the handover I'd give Claude. It explains not only *what* to build, but *why*.
+
+# SBA AI Studio – Architecture Handover for Claude
+
+**Project:** SBA AI Studio
+**Current Version:** v0.4.0-alpha
+**Repository:** Current GitHub repository (latest build)
+**Status:** Stable foundation complete – entering Integration & Ride Reconstruction phase.
+
+---
+
+# Mission
+
+SBA AI Studio is **NOT** a media importer.
+
+SBA AI Studio is an **AI-assisted Motorcycle Ride Reconstruction Engine** that automatically prepares professional DaVinci Resolve projects.
+
+The software should understand the structure of a motorcycle trip and reduce editing time from hours to minutes.
+
+Everything should support that mission.
+
+---
+
+# Current Foundation (Completed)
+
+The following systems already exist and are working:
+
+* Project Scanner
+* ExifTool integration
+* Metadata Mapper
+* Metadata Normalizer
+* Capture Time Resolver
+* Media Library
+* Resolve Connector
+* Resolve Project creation
+* Resolve Bin creation
+* Resolve Media import
+* Resolve Timeline creation
+* Planning domain models
+* Planning placement models
+* Regression framework
+* Git rollback strategy
+
+The foundation should **NOT** be redesigned.
+
+Instead, continue building on it.
+
+---
+
+# Development Philosophy
+
+Every service has one responsibility.
+
+Planning Engine decides:
+
+"What should happen?"
+
+Resolve Builder decides:
+
+"Execute the plan."
+
+Never mix planning logic with Resolve API calls.
+
+---
+
+# New Project Vision
+
+The application should stop thinking:
+
+Project
+
+↓
+
+Timeline
+
+Instead it should think:
+
+Project
+
+↓
+
+Ride Days
+
+↓
+
+Scenes
+
+↓
+
+Multicam
+
+↓
+
+Timeline
+
+The software reconstructs the ride.
+
+Resolve simply displays it.
+
+---
+
+# Camera Workflow
+
+Current recording equipment:
+
+Primary
+
+GoPro Hero13
+
+* Main camera
+* Lav microphone
+* Master storytelling camera
+
+Secondary
+
+GoPro Hero8
+
+* Secondary riding camera
+
+Drone
+
+DJI Flip
+
+360
+
+Insta360 X3
+
+Exported through Insta360 Studio.
+
+Only exported MP4 files beginning with
+
+VID_
+
+should be imported.
+
+---
+
+# Source Media Validation
+
+Only original camera footage enters the Planning Engine.
+
+Accepted
+
+GoPro
+
+GX*.MP4
+
+GH*.MP4
+
+DJI original video
+
+Insta360 exported MP4
+
+VID_*.MP4
+
+Rejected
+
+Images
+
+JPG
+
+PNG
+
+JPEG
+
+HEIC
+
+---
+
+Edited videos
+
+Resolve exports
+
+Rendered MP4
+
+---
+
+Cache
+
+Proxy
+
+Optimized Media
+
+---
+
+THM
+
+XML
+
+CUBE
+
+Audio
+
+Trash
+
+Everything rejected should appear in a validation report explaining why.
+
+---
+
+# Timestamp Rules
+
+Do NOT trust every camera equally.
+
+Hero13
+
+Primary timestamp source.
+
+Metadata.
+
+Highest confidence.
+
+---
+
+Hero8
+
+Metadata.
+
+Lower confidence.
+
+If timestamps are obviously wrong, later synchronise against Hero13.
+
+---
+
+DJI
+
+Metadata.
+
+---
+
+Insta360
+
+Ignore exported file timestamp.
+
+Instead parse the filename.
+
+Example
+
+VID_20260617_134554_00_003_185033.mp4
+
+Extract
+
+2026-06-17
+
+13:45:54
+
+Use this as capture start time.
+
+This is considered more reliable than exported metadata.
+
+---
+
+# Ride Reconstruction
+
+The Planning Engine should reconstruct the ride.
+
+Pipeline:
+
+Scanner
+
+↓
+
+Source Media Validation
+
+↓
+
+Metadata
+
+↓
+
+Capture Time
+
+↓
+
+Media Library
+
+↓
+
+Timeline Sorter
+
+↓
+
+Ride Day Detection
+
+↓
+
+Scene Detection
+
+↓
+
+Multicam Detection
+
+↓
+
+Timeline Builder
+
+↓
+
+Resolve
+
+The Planning Engine owns all reconstruction logic.
+
+---
+
+# Ride Days
+
+One Resolve timeline per ride day.
+
+Example:
+
+Project
+
+├── Day 1 Master
+
+├── Day 2 Master
+
+├── Day 3 Master
+
+└── Trip Master (optional)
+
+The Trip Master can later concatenate ride days.
+
+---
+
+# Scene Detection
+
+Within every Ride Day automatically detect scenes.
+
+Examples:
+
+Leaving Hotel
+
+Fuel Stop
+
+Coffee Stop
+
+Mountain Pass
+
+Castle Visit
+
+Hotel Arrival
+
+A Scene is the smallest editing unit.
+
+---
+
+# Gap Compression
+
+Do NOT preserve long empty periods.
+
+Large gaps make editing extremely difficult.
+
+Example:
+
+Ride
+
+45 minute lunch
+
+Ride
+
+Instead:
+
+Ride
+
+Lunch
+
+Ride
+
+Maintain chronological order but remove unnecessary empty timeline.
+
+Gap threshold should later become configurable.
+
+---
+
+# Multicam Strategy
+
+Do NOT build one giant multicam clip.
+
+Instead analyse every Scene individually.
+
+Examples:
+
+Scene
+
+Hero13 only
+
+↓
+
+Single clip
+
+---
+
+Scene
+
+Hero13
+
+Hero8
+
+↓
+
+2-camera multicam
+
+---
+
+Scene
+
+Hero13
+
+Hero8
+
+DJI
+
+↓
+
+3-camera multicam
+
+---
+
+Scene
+
+DJI only
+
+↓
+
+Single clip
+
+Only create multicam where overlapping cameras exist.
+
+---
+
+# Resolve Output
+
+Instead of:
+
+One enormous timeline
+
+Generate:
+
+Project
+
+↓
+
+Day 1 Timeline
+
+↓
+
+Scene 01
+
+Multicam
+
+Scene 02
+
+Single Camera
+
+Scene 03
+
+Single Camera
+
+Scene 04
+
+Multicam
+
+↓
+
+Day 2 Timeline
+
+↓
+
+...
+
+↓
+
+Trip Master (optional)
+
+This should dramatically improve editing efficiency.
+
+---
+
+# Immediate Development Priorities
+
+Priority 1
+
+Implement Source Media Validation Engine.
+
+Priority 2
+
+Complete TimelinePlanningService as the central orchestrator.
+
+Priority 3
+
+Integrate PlanningResult into TimelineBuilderService.
+
+Priority 4
+
+Update Resolve Builder to place clips using TimelinePlacement rather than simple append operations.
+
+Priority 5
+
+Create automatic scene-based multicam generation.
+
+Do NOT redesign existing working components.
+
+---
+
+# AI Roadmap (Later)
+
+Use local AI (Ollama) by default.
+
+Future features:
+
+* Thumbnail suggestions
+* YouTube title generation
+* Description generation
+* SEO optimisation
+* Tags
+* Chapters
+* Story analysis
+* Ride summary
+* Editing suggestions
+* Highlight detection
+
+Cloud AI should remain optional.
+
+---
+
+# Git Workflow
+
+Every completed sprint:
+
+git add .
+
+git commit -m "<Sprint Name>"
+
+git push
+
+git tag <milestone>
+
+git push --tags
+
+Never perform major refactoring without a rollback point.
+
+---
+
+# Coding Rules
+
+* Inspect before modifying.
+* Preserve working behaviour.
+* Small commits.
+* Regression tests must continue passing.
+* Complete files, not snippets.
+* Avoid duplicated logic.
+* Keep Resolve services thin.
+* Planning Engine contains business logic.
+* Resolve executes the generated plan.
+
+---
+
+# Product Vision
+
+The goal is **not** to automate DaVinci Resolve.
+
+The goal is to reconstruct a motorcycle adventure into an editor-friendly project.
+
+SBA AI Studio should understand:
+
+* ride days,
+* scenes,
+* camera overlap,
+* multicam opportunities,
+* story flow,
+
+and produce a project that is almost ready to edit.
+
+Editing should become storytelling rather than media organisation.
+
+This philosophy should guide every architectural decision going forward.
+
+## One final thought
+
+Gary, after following this project from the beginning, I think you've actually outgrown the original idea.
+
+Originally, SBA AI Studio was:
+
+> *"Import my footage into DaVinci Resolve."*
+
+Now it's becoming:
+
+> **"Understand my motorcycle trip and build the edit for me."**
+
+That's a much bigger vision—and, in my opinion, a much more valuable product. If Claude builds toward this architecture instead of just adding features, you'll end up with something that doesn't really exist today: an editor that understands how motorcycle adventures are actually filmed.

@@ -155,3 +155,88 @@ class AppSettingsRegressionTest(BaseRegressionTest):
                 "Loading the real config/settings.json did not "
                 "produce a valid GapCompressionSettings."
             )
+
+        # --------------------------------------------------
+        # load_timeline_creation_enabled()
+        # --------------------------------------------------
+
+        from sba_resolve.core.services.app_settings import (
+            load_timeline_creation_enabled,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+
+            tmp_path = Path(tmp)
+
+            # Missing file - defaults to True (original,
+            # always-create-a-timeline behaviour).
+            missing_path = tmp_path / "does_not_exist.json"
+
+            if load_timeline_creation_enabled(missing_path) is not True:
+                raise RuntimeError(
+                    "A missing settings file should default "
+                    "enable_timeline_creation to True."
+                )
+
+            # Malformed JSON - same safe default.
+            malformed_path = tmp_path / "malformed.json"
+            malformed_path.write_text("{not valid json", encoding="utf-8")
+
+            if load_timeline_creation_enabled(malformed_path) is not True:
+                raise RuntimeError(
+                    "Malformed JSON should default "
+                    "enable_timeline_creation to True."
+                )
+
+            # Key absent entirely - same safe default.
+            no_key_path = tmp_path / "no_key.json"
+            no_key_path.write_text(
+                json.dumps({"theme": "dark"}), encoding="utf-8"
+            )
+
+            if load_timeline_creation_enabled(no_key_path) is not True:
+                raise RuntimeError(
+                    "A missing enable_timeline_creation key should "
+                    "default to True."
+                )
+
+            # Non-bool value (e.g. a string) - treated as invalid,
+            # falls back to True rather than doing something
+            # surprising with a truthy/falsy string.
+            non_bool_path = tmp_path / "non_bool.json"
+            non_bool_path.write_text(
+                json.dumps({"enable_timeline_creation": "false"}),
+                encoding="utf-8",
+            )
+
+            if load_timeline_creation_enabled(non_bool_path) is not True:
+                raise RuntimeError(
+                    "A non-bool enable_timeline_creation value "
+                    "should fall back to True, not be coerced."
+                )
+
+            # Explicit false is respected.
+            false_path = tmp_path / "false.json"
+            false_path.write_text(
+                json.dumps({"enable_timeline_creation": False}),
+                encoding="utf-8",
+            )
+
+            if load_timeline_creation_enabled(false_path) is not False:
+                raise RuntimeError(
+                    "Explicit enable_timeline_creation: false "
+                    "should be respected."
+                )
+
+            # Explicit true is respected.
+            true_path = tmp_path / "true.json"
+            true_path.write_text(
+                json.dumps({"enable_timeline_creation": True}),
+                encoding="utf-8",
+            )
+
+            if load_timeline_creation_enabled(true_path) is not True:
+                raise RuntimeError(
+                    "Explicit enable_timeline_creation: true "
+                    "should be respected."
+                )

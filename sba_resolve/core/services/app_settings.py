@@ -14,6 +14,7 @@ never crashes the app, it just runs with defaults.
 Currently exposes:
 
     load_gap_compression_settings() -> GapCompressionSettings
+    load_timeline_creation_enabled() -> bool
 
 To turn Gap Compression on, edit config/settings.json:
 
@@ -29,6 +30,17 @@ Gap Compression is OFF by default (both here and in
 GapCompressionSettings itself), so an untouched settings.json
 reproduces the original, fully gap-preserving placement
 behaviour exactly.
+
+To turn Resolve timeline creation off entirely (e.g. while
+focusing on other work, without touching the placement/sync
+code at all), set:
+
+    {
+        "enable_timeline_creation": false
+    }
+
+Timeline creation is ON by default (an absent or malformed key
+reproduces the original, always-create-a-timeline behaviour).
 """
 
 from __future__ import annotations
@@ -86,3 +98,31 @@ def load_gap_compression_settings(
         )
     except (TypeError, ValueError):
         return GapCompressionSettings()
+
+
+def load_timeline_creation_enabled(
+    path: Path | None = None,
+) -> bool:
+    """
+    Reads "enable_timeline_creation" from config/settings.json.
+
+    Returns True (timeline creation ON, the original behaviour)
+    if the file is missing, isn't valid JSON, doesn't contain
+    that key, or the value isn't a plain bool - this never
+    raises, so a typo in the config file can't silently disable
+    timeline creation without the person realising why.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+
+    value = raw.get("enable_timeline_creation", True)
+
+    if not isinstance(value, bool):
+        return True
+
+    return value

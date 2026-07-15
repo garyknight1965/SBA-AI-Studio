@@ -38,6 +38,31 @@ class ResolveMediaPoolService:
                 return None
         return current
 
+    def ensure_bin_path(self, bin_path):
+        """
+        Walks a '/'-separated bin path from the root folder,
+        creating any folder that doesn't already exist along the
+        way (not just the final level) - e.g. "Day 1/GoPro HERO13
+        Black" creates the "Day 1" folder first if needed, then
+        "GoPro HERO13 Black" inside it. Returns the final folder.
+        """
+        current = self.root_folder
+        for part in [
+            p.strip() for p in str(bin_path).split("/") if p.strip()
+        ]:
+            existing = self.find_bin(part, current)
+            if existing is not None:
+                current = existing
+                continue
+            created = self.media_pool.AddSubFolder(current, part)
+            if created is None:
+                raise RuntimeError(
+                    f"Unable to create Media Pool folder "
+                    f"'{part}' in path '{bin_path}'."
+                )
+            current = created
+        return current
+
     def find_clip(self, folder, filename):
         for clip in folder.GetClipList():
             props = clip.GetClipProperty()

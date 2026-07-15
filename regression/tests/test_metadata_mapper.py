@@ -25,7 +25,7 @@ class MetadataMapperRegressionTest(BaseRegressionTest):
         from sba_resolve.core.metadata.metadata_mapper import MetadataMapper
 
         sample = {
-            "SourceFile": r"D:\Movies\Test\GX010001.MP4",
+            "SourceFile": "D:/Movies/Test/GX010001.MP4",
             "FileSize": 1024000,
             "ImageWidth": 3840,
             "ImageHeight": 2160,
@@ -41,7 +41,7 @@ class MetadataMapperRegressionTest(BaseRegressionTest):
 
         media = MetadataMapper.map(
             sample,
-            Path(r"D:\Movies\Test"),
+            Path("D:/Movies/Test"),
         )
 
         assert media.filename == "GX010001.MP4"

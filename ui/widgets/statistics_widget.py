@@ -59,14 +59,17 @@ class StatisticsWidget(QWidget):
             else:
                 image += 1
 
-            duration += float(getattr(media, "duration_seconds", 0) or 0)
+            duration += self._duration_seconds(media)
 
-            cam = str(getattr(media, "camera_model", "")).lower()
-            if "gopro" in cam:
+            make = str(getattr(media, "camera_make", "")).lower()
+            model = str(getattr(media, "camera_model", "")).lower()
+            combined = f"{make} {model}"
+
+            if "gopro" in combined:
                 gopro += 1
-            elif "dji" in cam:
+            elif "dji" in combined:
                 dji += 1
-            elif "insta" in cam:
+            elif "insta" in combined:
                 insta += 1
             else:
                 other += 1
@@ -83,3 +86,19 @@ class StatisticsWidget(QWidget):
         mins = int((duration % 3600) // 60)
         secs = int(duration % 60)
         self._labels["Total Duration"].setText(f"{hrs:02}:{mins:02}:{secs:02}")
+
+    @staticmethod
+    def _duration_seconds(media) -> float:
+        """
+        MediaFile stores duration as a plain seconds string (e.g.
+        "270.54"), not a numeric "duration_seconds" attribute -
+        this parses it safely, defaulting to 0.0 for anything
+        missing or malformed rather than raising.
+        """
+
+        raw = getattr(media, "duration", "")
+
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0

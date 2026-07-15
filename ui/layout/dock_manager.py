@@ -14,6 +14,9 @@ from ui.widgets.media_browser_widget import MediaBrowserWidget
 from ui.widgets.metadata_widget import MetadataWidget
 from ui.widgets.statistics_widget import StatisticsWidget
 from ui.widgets.timeline_widget import TimelineWidget
+from sba_resolve.core.services.timeline_planning_service import (
+    TimelinePlanningService,
+)
 
 
 class DockManager:
@@ -45,6 +48,17 @@ class DockManager:
         self.main_window.statistics_panel = self.statistics_panel
         self.main_window.timeline_panel = self.timeline_panel
 
+        # Selecting a clip in EITHER the workspace tree or the
+        # media browser table populates the Metadata panel -
+        # WorkspaceTreeWidget already emitted media_selected, it
+        # just had nothing listening on the other end.
+        self.workspace_tree.media_selected.connect(
+            self.metadata_panel.set_media
+        )
+        self.media_browser.clip_selected.connect(
+            self.metadata_panel.set_media
+        )
+
         self._created = True
         self.refresh(workspace)
 
@@ -56,7 +70,51 @@ class DockManager:
         self.media_browser.set_library(workspace.media)
         self.statistics_panel.update_statistics(workspace.media)
         self.metadata_panel.clear()
-        self.timeline_panel.clear()
+        self._refresh_timeline_preview(workspace)
+
+    def _refresh_timeline_preview(self, workspace):
+        """
+        Populates the Timeline panel with a Day/Scene grouped
+        preview from the Planning Engine - this runs entirely
+        locally (no Resolve connection needed), so it works even
+        with Resolve timeline creation disabled or Resolve not
+        connected at all. Falls back to "Timeline is empty" if
+        there's no media yet, or the Planning Engine can't
+        produce anything from it.
+        """
+
+        media = list(getattr(workspace, "media", []) or [])
+
+        if not media:
+            self.timeline_panel.clear()
+            return
+
+        try:
+            result = TimelinePlanningService().plan(media)
+        except Exception:
+            # A local preview should never crash the app - if
+            # planning fails for any reason, just show nothing
+            # rather than an error dialog over a side panel.
+            self.timeline_panel.clear()
+            return
+
+        if not result.placements:
+            self.timeline_panel.clear()
+            return
+
+        lines = []
+
+        for placement in sorted(
+            result.placements,
+            key=lambda p: (p.ride_day, p.scene, p.record_frame),
+        ):
+            lines.append(
+                f"Day {placement.ride_day} / Scene {placement.scene} "
+                f"| {placement.camera_name or 'Unknown'} "
+                f"| {placement.clip_name}"
+            )
+
+        self.timeline_panel.load_clips(lines)
 
     def _add(self, title, widget, area):
         dock = QDockWidget(title, self.main_window)

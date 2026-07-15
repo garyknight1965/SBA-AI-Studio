@@ -2,8 +2,8 @@
 ============================================================
 SBA AI Studio
 Media Import Pipeline
-Version : 2.0.0
-Sprint : ML-014
+Version : 2.1.0
+Sprint : ML-022
 ============================================================
 
 Orchestrates the complete media import workflow.
@@ -20,6 +20,10 @@ MetadataNormalizer
         ↓
 MetadataMapper
         ↓
+Insta360ViewAssigner
+        ↓
+GoProChapterResequencer
+        ↓
 MediaFile[]
 
 Version 2.0.0 (ML-014) inserts Source Media Validation
@@ -29,6 +33,13 @@ Insta360 VID_ export, DJI) reaches ExifTool; everything else
 (images, sidecar files, cache/proxy leftovers, rendered
 exports) is rejected up front, with a reason recorded in
 `last_validation_report`, and never costs a metadata read.
+
+Version 2.1.0 (ML-022) adds GoProChapterResequencer: GoPro
+embeds the SAME creation timestamp into every chapter of a
+multi-chapter recording (e.g. GH010145/GH020145/GH030145.MP4),
+so without correction every chapter after the first collides
+on the exact same timeline frame. This corrects chapters 2+ to
+their real, sequential capture time.
 """
 
 from __future__ import annotations
@@ -43,6 +54,9 @@ from sba_resolve.core.models.media_validation_report import (
     MediaValidationReport,
 )
 from sba_resolve.core.project_scanner import ProjectScanner
+from sba_resolve.core.services.gopro_chapter_resequencer import (
+    GoProChapterResequencer,
+)
 from sba_resolve.core.services.insta360_view_assigner import (
     Insta360ViewAssigner,
 )
@@ -68,6 +82,8 @@ class MediaImportPipeline:
         self.validator = SourceMediaValidator()
 
         self.view_assigner = Insta360ViewAssigner()
+
+        self.chapter_resequencer = GoProChapterResequencer()
 
         # Populated by the most recent import_folder() call, so
         # callers (CLI, GUI) can print or inspect what was
@@ -144,6 +160,13 @@ class MediaImportPipeline:
         # --------------------------------------------------
 
         self.view_assigner.assign(media)
+
+        # --------------------------------------------------
+        # Step 7
+        # Correct multi-chapter GoPro recording timestamps
+        # --------------------------------------------------
+
+        self.chapter_resequencer.resequence(media)
 
         return media
 

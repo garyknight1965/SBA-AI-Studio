@@ -3,8 +3,10 @@
     "recent_folder": "",
     "recent_projects": [],
     "exiftool": "C:\\Tools\\ExifTool\\exiftool\\exiftool.exe",
+    "resolve_module_path": "",
+    "enable_timeline_creation": false,
     "gap_compression": {
-        "enabled": true,
+        "enabled": false,
         "gap_threshold_seconds": 60,
         "compressed_gap_seconds": 2
     }

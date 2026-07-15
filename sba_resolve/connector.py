@@ -8,12 +8,20 @@ Version : 3.1.1 RC1
 
 from sba_resolve.context import ResolveContext
 from sba_resolve.commands.create_project import create_project
+from sba_resolve.core.services.app_settings import (
+    load_timeline_creation_enabled,
+)
+from sba_resolve.core.services.resolve_locator import (
+    ensure_resolve_module_importable,
+)
 from sba_resolve.media_pool.media_pool_manager import MediaPoolManager
 from sba_resolve.commands.create_timeline import create_timeline
 
 
 class ResolveConnector:
     def __init__(self, project_data):
+        ensure_resolve_module_importable()
+
         import DaVinciResolveScript as bmd
 
         self.context = ResolveContext()
@@ -44,4 +52,9 @@ class ResolveConnector:
         print(f'Status               : {status}') ; print('='*60)
 
     def run(self):
-        print('='*60); print('Starting Resolve Pipeline'); print('='*60); print(); self.create_project(); self.media_pool(); print(); print('STEP 3 : Create Timeline'); print(); create_timeline(self.context); self.print_summary()
+        print('='*60); print('Starting Resolve Pipeline'); print('='*60); print(); self.create_project(); self.media_pool(); print()
+        if load_timeline_creation_enabled():
+            print('STEP 3 : Create Timeline'); print(); create_timeline(self.context)
+        else:
+            print('STEP 3 : Create Timeline - SKIPPED (enable_timeline_creation is false in config/settings.json)')
+        self.print_summary()

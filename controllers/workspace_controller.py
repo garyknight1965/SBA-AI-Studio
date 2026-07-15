@@ -1,7 +1,7 @@
 """
 Workspace Controller
-Version 5.1.0
-ML-015 Insta360 Paired-View Assignment
+Version 5.2.0
+ML-022 GoPro Chapter Resequencing
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.project_scanner import ProjectScanner
 from sba_resolve.core.metadata.exiftool_engine import ExifToolEngine
 from sba_resolve.core.metadata.metadata_mapper import MetadataMapper
+from sba_resolve.core.services.gopro_chapter_resequencer import (
+    GoProChapterResequencer,
+)
 from sba_resolve.core.services.insta360_view_assigner import (
     Insta360ViewAssigner,
 )
@@ -29,6 +32,7 @@ class WorkspaceController:
         self.scanner = ProjectScanner(workspace.project_root)
         self.validator = SourceMediaValidator()
         self.view_assigner = Insta360ViewAssigner()
+        self.chapter_resequencer = GoProChapterResequencer()
 
         # Populated by the most recent scan_project() call, so
         # callers (CLI, GUI) can inspect or display what was
@@ -87,6 +91,17 @@ class WorkspaceController:
             # --------------------------------------------------
 
             self.view_assigner.assign(media)
+
+            # --------------------------------------------------
+            # Correct multi-chapter GoPro recording timestamps.
+            # GoPro embeds the SAME creation time into every
+            # chapter of one continuous recording (e.g.
+            # GH010145/GH020145/GH030145.MP4), so without this,
+            # every chapter after the first collides on the exact
+            # same timeline frame instead of playing back-to-back.
+            # --------------------------------------------------
+
+            self.chapter_resequencer.resequence(media)
 
             print(f"[SBA] Mapper produced {len(media)} MediaFile objects")
             if media:

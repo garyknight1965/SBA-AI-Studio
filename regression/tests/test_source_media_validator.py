@@ -89,6 +89,10 @@ class SourceMediaValidatorRegressionTest(BaseRegressionTest):
             # pattern - almost certainly a render/export, not
             # raw footage.
             self._make_media("Sunday Ride Master.mp4"),
+            # Rejected: cloud-sync/file-manager soft-delete marker.
+            self._make_media(
+                ".trashed-1781209346-GX010223.MP4"
+            ),
         ]
 
         validator = SourceMediaValidator()
@@ -119,9 +123,9 @@ class SourceMediaValidatorRegressionTest(BaseRegressionTest):
                 f"{expected_accepted}, got {accepted_names}."
             )
 
-        if report.rejected_count != 6:
+        if report.rejected_count != 7:
             raise RuntimeError(
-                f"Expected 6 rejected files, got "
+                f"Expected 7 rejected files, got "
                 f"{report.rejected_count}: "
                 f"{[m.filename for m in report.rejected]}"
             )
@@ -179,6 +183,15 @@ class SourceMediaValidatorRegressionTest(BaseRegressionTest):
                 "Expected 'Sunday Ride Master.mp4' to be "
                 f"rejected as an unrecognised pattern, got "
                 f"reason: {render_reason!r}"
+            )
+
+        trashed_name = ".trashed-1781209346-GX010223.MP4"
+
+        if "trash" not in rejected_by_name[trashed_name].lower():
+            raise RuntimeError(
+                "Expected the .trashed- file to be rejected as "
+                f"a soft-delete marker, got reason: "
+                f"{rejected_by_name[trashed_name]!r}"
             )
 
         # Report grouping/count sanity.

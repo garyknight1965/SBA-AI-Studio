@@ -162,6 +162,12 @@ class SourceMediaValidator:
             if keyword in relative_path:
                 return f"Located in a '{keyword}' folder"
 
+        if filename.lower().startswith(".trashed-"):
+            return (
+                "Soft-deleted file (.trashed- prefix, likely a "
+                "cloud-sync or file-manager trash marker)"
+            )
+
         if extension in REJECTED_EXTENSIONS:
             return REJECTED_EXTENSIONS[extension]
 

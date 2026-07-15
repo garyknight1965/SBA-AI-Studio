@@ -286,6 +286,8 @@ def create_timeline(context):
     print()
     print("Planned placements:")
 
+    zero_duration_clips = []
+
     for placement in sorted(
         result.placements,
         key=lambda p: (p.track_index, p.record_frame),
@@ -297,12 +299,32 @@ def create_timeline(context):
         minutes = int((elapsed_seconds % 3600) // 60)
         seconds = elapsed_seconds % 60
 
+        duration_seconds = placement.duration_frames / project_fps
+
+        if placement.duration_frames <= 0:
+            zero_duration_clips.append(placement.clip_name)
+
         print(
             f"  Track {placement.track_index} | "
             f"frame {placement.record_frame:>10} "
             f"(+{hours:02d}:{minutes:02d}:{seconds:05.2f}) | "
+            f"dur {placement.duration_frames:>6} "
+            f"({duration_seconds:6.2f}s) | "
             f"{placement.clip_name}"
         )
+
+    if zero_duration_clips:
+        print()
+        print(
+            f"WARNING: {len(zero_duration_clips)} clip(s) have a "
+            f"zero or invalid duration - they'll be placed at "
+            f"the correct frame but effectively invisible/"
+            f"unplayable on the timeline:"
+        )
+        for name in zero_duration_clips[:10]:
+            print(f"  - {name}")
+        if len(zero_duration_clips) > 10:
+            print(f"  ... and {len(zero_duration_clips) - 10} more")
 
     append_items = []
     skipped = []

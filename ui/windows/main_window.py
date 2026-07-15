@@ -18,6 +18,7 @@ from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
 )
+from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
 from sba_resolve.connector import ResolveConnector
 
@@ -103,13 +104,49 @@ class MainWindow(QMainWindow):
 
             media_list = list(self.workspace.media)
 
+            # --------------------------------------------------
+            # Determine which Ride Day each clip belongs to, so
+            # bins can be organized as "Day N/Camera" instead of
+            # one flat list of camera bins. This only needs
+            # DayDetector's gap-based grouping - not the full
+            # Planning Engine (Scene Detection, segments,
+            # multicam, placement) - since bin naming only cares
+            # about the day number.
+            # --------------------------------------------------
+
+            ride_days = DayDetector().detect(media_list)
+
+            day_by_media_id: dict[int, int] = {}
+
+            for ride_day in ride_days:
+                for clip in ride_day.clips:
+                    day_by_media_id[id(clip)] = ride_day.index
+
+            def bin_path_for(media) -> str:
+                day = day_by_media_id.get(id(media), 1)
+                camera = (
+                    getattr(media, "camera_display_name", None)
+                    or getattr(media, "camera_model", None)
+                    or "Unknown"
+                )
+                return f"Day {day}/{camera}"
+
             # Every distinct bin_path referenced by scanned media must be
             # requested here, or sync_bins() will create nothing and every
             # import will fail with "Media Pool folder not found".
-            bin_names = sorted({
-                getattr(m, "category", "Media") or "Media"
-                for m in media_list
-            })
+            bin_paths_by_media = {
+                id(m): bin_path_for(m) for m in media_list
+            }
+
+            bin_names = [
+                path
+                for _day, path in sorted(
+                    {
+                        (day_by_media_id.get(id(m), 1), bin_paths_by_media[id(m)])
+                        for m in media_list
+                    }
+                )
+            ]
 
             project_data = {
                 "project_name": self.workspace.project_name,
@@ -117,7 +154,7 @@ class MainWindow(QMainWindow):
                 "media": [
                     {
                         "file": str(m.full_path),
-                        "bin_path": getattr(m, "category", "Media") or "Media",
+                        "bin_path": bin_paths_by_media[id(m)],
                     }
                     for m in media_list
                 ],
