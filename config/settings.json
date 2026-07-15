@@ -2,5 +2,10 @@
     "theme": "dark",
     "recent_folder": "",
     "recent_projects": [],
-    "exiftool": "C:\\Tools\\ExifTool\\exiftool\\exiftool.exe"
+    "exiftool": "C:\\Tools\\ExifTool\\exiftool\\exiftool.exe",
+    "gap_compression": {
+        "enabled": true,
+        "gap_threshold_seconds": 60,
+        "compressed_gap_seconds": 2
+    }
 }

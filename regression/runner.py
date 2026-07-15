@@ -57,6 +57,9 @@ class RegressionRunner:
 
                 print(result)
 
+                if not result.success and result.message:
+                    print(f"    {result.message}")
+
                 if result.success:
                     passed += 1
                 else:

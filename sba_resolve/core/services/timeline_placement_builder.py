@@ -26,6 +26,14 @@ conforms clips of differing native frame rates to play back at
 normal speed on the timeline's own frame rate, so a clip's real
 duration must be expressed in timeline frames to stay consistent
 with its position.
+
+Version 3.3 (ML-012) adds optional, configurable Gap
+Compression support. build() now accepts a GapCompressionMap
+(built once by TimelinePlanningService via GapCompressor and
+shared with MulticamDetector so both agree on the same
+effective timeline). When no map is supplied, record_frame is
+computed exactly as before - real ride-time position, every
+gap preserved in full.
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from typing import Iterable
 
 from sba_resolve.core.models.planning_segment import PlanningSegment
 from sba_resolve.core.models.timeline_placement import TimelinePlacement
+from sba_resolve.core.services.gap_compressor import GapCompressionMap
 from sba_resolve.core.services.project_time_service import (
     ProjectTimeService,
 )
@@ -81,12 +90,28 @@ class TimelinePlacementBuilder:
     def build(
         self,
         segments: Iterable[PlanningSegment],
+        gap_map: GapCompressionMap | None = None,
     ) -> list[TimelinePlacement]:
+        """
+        Parameters
+        ----------
+        segments
+            PlanningSegments to place.
+        gap_map
+            Optional GapCompressionMap. When omitted, an
+            identity map is used (no compression - the
+            original, fully gap-preserving behaviour). Pass the
+            same GapCompressionMap instance used elsewhere in
+            the same plan() call (e.g. MulticamDetector) so
+            placements and multicam windows agree.
+        """
 
         segments = list(segments)
 
         if not segments:
             return []
+
+        gap_map = gap_map or GapCompressionMap()
 
         media_files = []
 
@@ -111,6 +136,8 @@ class TimelinePlacementBuilder:
 
                 placement.ride_day = segment.ride_day
 
+                placement.scene = segment.scene
+
                 placement.camera_name = (
                     getattr(media, "camera_display_name", None)
                     or getattr(media, "camera_model", None)
@@ -131,6 +158,7 @@ class TimelinePlacementBuilder:
                 placement.record_frame = self._record_frame(
                     media,
                     project_start,
+                    gap_map,
                 )
 
                 placement.duration_frames = self._duration_frames(
@@ -176,6 +204,7 @@ class TimelinePlacementBuilder:
         self,
         media,
         project_start: datetime | None,
+        gap_map: GapCompressionMap,
     ) -> int:
 
         if project_start is None:
@@ -189,8 +218,14 @@ class TimelinePlacementBuilder:
         if capture_time is None:
             return 0
 
+        # With an identity gap_map (Gap Compression disabled),
+        # effective_time(t) == t, so this is exactly the original
+        # real-ride-time delta.
+        effective_time = gap_map.effective_time(capture_time)
+        effective_start = gap_map.effective_time(project_start)
+
         delta = (
-            capture_time - project_start
+            effective_time - effective_start
         ).total_seconds()
 
         return round(delta * self.fps)

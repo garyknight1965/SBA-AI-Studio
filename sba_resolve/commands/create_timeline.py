@@ -36,6 +36,9 @@ output is translated into real Resolve API calls.
 
 from __future__ import annotations
 
+from sba_resolve.core.services.app_settings import (
+    load_gap_compression_settings,
+)
 from sba_resolve.core.services.timeline_fps import (
     DEFAULT_PROJECT_FPS,
     parse_timeline_fps,
@@ -130,22 +133,114 @@ def create_timeline(context):
 
     imported_by_name = {}
 
+    # Tracks which requested filename each underlying clip was
+    # first seen under - by BOTH Python object identity and by
+    # Resolve's own reported "File Path" property (id() alone can
+    # be unreliable across a scripting/COM bridge, which may hand
+    # back a fresh wrapper object per call even for the same
+    # underlying item - comparing the reported file path is a
+    # more reliable, Resolve-native signal). If Resolve's Media
+    # Pool ever returns the SAME underlying clip for two different
+    # requested filenames (e.g. it deduplicated a paired Insta360
+    # dual-lens export internally, treating both views as one
+    # media item), this catches it directly rather than us
+    # continuing to guess blind - it would fully explain why one
+    # of the pair can never be placed as a distinct timeline item.
+    clip_identity_seen: dict[int, str] = {}
+    clip_path_seen: dict[str, str] = {}
+    duplicate_identity_warnings = []
+    duplicate_path_warnings = []
+
     for clip in imported:
         try:
             props = clip.GetClipProperty()
             name = props.get("File Name") or props.get("Clip Name")
+            file_path = props.get("File Path")
         except Exception:
             name = None
-        if name:
-            imported_by_name[name.lower()] = clip
+            file_path = None
+
+        if not name:
+            continue
+
+        imported_by_name[name.lower()] = clip
+
+        identity = id(clip)
+        if identity in clip_identity_seen:
+            duplicate_identity_warnings.append(
+                (clip_identity_seen[identity], name)
+            )
+        else:
+            clip_identity_seen[identity] = name
+
+        if file_path:
+            if file_path in clip_path_seen:
+                duplicate_path_warnings.append(
+                    (clip_path_seen[file_path], name, file_path)
+                )
+            else:
+                clip_path_seen[file_path] = name
+
+    if duplicate_identity_warnings:
+        print()
+        print(
+            f"WARNING: {len(duplicate_identity_warnings)} pair(s) "
+            f"of requested filenames resolved to the SAME "
+            f"underlying Resolve clip object - Resolve's Media "
+            f"Pool may be deduplicating these internally:"
+        )
+        for first_name, second_name in duplicate_identity_warnings:
+            print(f"  - {first_name}  <->  {second_name}")
+
+    if duplicate_path_warnings:
+        print()
+        print(
+            f"WARNING: {len(duplicate_path_warnings)} pair(s) of "
+            f"requested filenames report the SAME underlying "
+            f"'File Path' from Resolve - these are almost "
+            f"certainly the same media item internally, despite "
+            f"having different requested filenames:"
+        )
+        for first_name, second_name, file_path in (
+            duplicate_path_warnings
+        ):
+            print(f"  - {first_name}  <->  {second_name}")
+            print(f"    File Path: {file_path}")
 
     media_files = context.project_data.get("media_objects", [])
 
     # -----------------------------------------------------
     # Run the Planning Engine
     # -----------------------------------------------------
+    #
+    # gap_compression is read from project_data if the caller
+    # supplied one (e.g. the GUI loads it from
+    # config/settings.json - see load_gap_compression_settings());
+    # otherwise it falls back to the same config file directly, so
+    # this also works for callers (tests, scripts) that don't set
+    # it explicitly. Either way, an untouched, default
+    # settings.json means Gap Compression stays OFF and placement
+    # is exactly the original, fully gap-preserving behaviour.
 
-    planning_service = TimelinePlanningService(fps=project_fps)
+    gap_compression = context.project_data.get("gap_compression")
+
+    if gap_compression is None:
+        gap_compression = load_gap_compression_settings()
+
+    if gap_compression.enabled:
+        print(
+            f"Gap Compression   : ENABLED (gaps over "
+            f"{gap_compression.gap_threshold_seconds:.0f}s "
+            f"compressed to "
+            f"{gap_compression.compressed_gap_seconds:.0f}s)"
+        )
+    else:
+        print("Gap Compression   : disabled")
+
+    planning_service = TimelinePlanningService(
+        fps=project_fps,
+        gap_compression=gap_compression,
+    )
 
     result = planning_service.plan(media_files)
 
@@ -155,6 +250,7 @@ def create_timeline(context):
 
     print()
     print(f"Ride days         : {result.statistics.ride_days}")
+    print(f"Scenes            : {result.statistics.scenes}")
     print(f"Planning segments : {len(result.segments)}")
     print(f"Placements        : {len(result.placements)}")
 
@@ -186,6 +282,27 @@ def create_timeline(context):
     # -----------------------------------------------------
     # Build the AppendToTimeline batch from TimelinePlacements
     # -----------------------------------------------------
+
+    print()
+    print("Planned placements:")
+
+    for placement in sorted(
+        result.placements,
+        key=lambda p: (p.track_index, p.record_frame),
+    ):
+
+        elapsed_seconds = placement.record_frame / project_fps
+
+        hours = int(elapsed_seconds // 3600)
+        minutes = int((elapsed_seconds % 3600) // 60)
+        seconds = elapsed_seconds % 60
+
+        print(
+            f"  Track {placement.track_index} | "
+            f"frame {placement.record_frame:>10} "
+            f"(+{hours:02d}:{minutes:02d}:{seconds:05.2f}) | "
+            f"{placement.clip_name}"
+        )
 
     append_items = []
     skipped = []
@@ -224,14 +341,110 @@ def create_timeline(context):
         print("No placements could be matched to imported clips.")
         return timeline
 
-    if not media_pool.AppendToTimeline(append_items):
+    # -----------------------------------------------------
+    # Append per-track, not as one mixed batch.
+    #
+    # Diagnosed via ML-017: two clips sharing the exact same
+    # recordFrame as another clip elsewhere in the SAME batch
+    # (same real moment, different track - e.g. paired Insta360
+    # views) were silently vanishing from the timeline entirely,
+    # even though AppendToTimeline still returned a full-count,
+    # truthy result. Splitting into one AppendToTimeline call per
+    # track removes any possibility of Resolve treating same-frame
+    # items on different tracks as a single-call conflict.
+    # -----------------------------------------------------
+
+    items_by_track: dict[int, list] = {}
+
+    for item in append_items:
+        items_by_track.setdefault(item["trackIndex"], []).append(item)
+
+    appended_items = []
+
+    for track_index in sorted(items_by_track):
+
+        track_items = items_by_track[track_index]
+
+        track_appended = media_pool.AppendToTimeline(track_items)
+
+        # An empty/falsy result for THIS track doesn't necessarily
+        # mean total failure - it may mean every clip requested
+        # for this track was silently dropped by Resolve, which
+        # the count-mismatch warning below already reports. Only
+        # a totally empty result across every track (checked
+        # after the loop) is treated as a hard failure.
+        if track_appended:
+            appended_items.extend(track_appended)
+
+    if not appended_items:
         raise RuntimeError("Failed to append clips to timeline.")
+
+    if len(appended_items) != len(append_items):
+
+        # AppendToTimeline can silently drop individual clips
+        # (e.g. an overlap with existing content on the same
+        # video track at the same recordFrame) while still
+        # returning a non-empty, truthy list for the ones that
+        # DID succeed. Checking only truthiness (the previous
+        # behaviour) would report "SUCCESS" even when some clips
+        # never actually reached the timeline.
+
+        requested_names = {
+            item["mediaPoolItem"].GetClipProperty().get("File Name")
+            or item["mediaPoolItem"].GetClipProperty().get("Clip Name")
+            for item in append_items
+        }
+
+        placed_names = set()
+
+        for timeline_item in appended_items:
+            try:
+                mpi = timeline_item.GetMediaPoolItem()
+                props = mpi.GetClipProperty() if mpi else {}
+                name = props.get("File Name") or props.get("Clip Name")
+            except Exception:
+                name = None
+            if name:
+                placed_names.add(name)
+
+        dropped_names = requested_names - placed_names
+
+        print()
+        print(
+            f"WARNING: requested {len(append_items)} clip "
+            f"placement(s), but Resolve only placed "
+            f"{len(appended_items)}. "
+            f"{len(append_items) - len(appended_items)} clip(s) "
+            f"were silently dropped by Resolve - most likely an "
+            f"overlap with existing content already on the same "
+            f"video track at the same recordFrame."
+        )
+
+        if dropped_names:
+            print("Dropped clip(s):")
+            for name in sorted(dropped_names)[:10]:
+                print(f"  - {name}")
+            if len(dropped_names) > 10:
+                print(f"  ... and {len(dropped_names) - 10} more")
 
     print()
     print(
-        f"Timeline created with {len(append_items)} clips "
+        f"Timeline created with {len(appended_items)} clips "
         f"across {max_track} track(s)."
     )
+
+    # -----------------------------------------------------
+    # Verify every clip actually landed WHERE requested, not
+    # just that a full-count list came back. AppendToTimeline
+    # can return a correctly-sized, truthy list of TimelineItems
+    # while one or more of them ends up at the wrong frame (or
+    # isn't findable on its requested track at all) due to an
+    # internal Resolve conflict - the count check above can't
+    # catch that. Ask the timeline itself, per track, what's
+    # really there.
+    # -----------------------------------------------------
+
+    _verify_placements(timeline, append_items)
 
     # -----------------------------------------------------
     # Write ride-day and multicam markers onto the timeline
@@ -274,3 +487,160 @@ def create_timeline(context):
             )
 
     return timeline
+
+
+def _verify_placements(timeline, append_items):
+    """
+    Cross-checks every requested placement against what the
+    timeline itself reports via GetItemListInTrack(), across
+    EVERY video track - not just the one requested.
+
+    AppendToTimeline's return value can look like full success
+    (a truthy list, the right length, no exception) even when a
+    clip's real position on the timeline doesn't match what was
+    requested, lands on a completely different track than
+    requested, or can't be found anywhere at all - the
+    count-only check earlier in create_timeline() can't catch
+    any of these. This asks Resolve's own timeline state
+    directly instead of trusting AppendToTimeline's return
+    value, and searches the whole timeline (not just the
+    requested track) so a clip that landed on the wrong track
+    entirely is reported as exactly that, rather than as
+    "missing".
+
+    Prints a WARNING naming every mismatch found. Never raises -
+    this is diagnostic only, so a bad placement is reported but
+    doesn't abort the rest of the build (markers, etc).
+    """
+
+    track_count = timeline.GetTrackCount("video") or 0
+
+    track_item_cache: dict[int, list] = {}
+
+    def track_items(index):
+        if index not in track_item_cache:
+            track_item_cache[index] = (
+                timeline.GetItemListInTrack("video", index) or []
+            )
+        return track_item_cache[index]
+
+    def find_by_name(index, requested_name):
+        for timeline_item in track_items(index):
+            try:
+                mpi = timeline_item.GetMediaPoolItem()
+                mpi_props = mpi.GetClipProperty() if mpi else {}
+                name = (
+                    mpi_props.get("File Name")
+                    or mpi_props.get("Clip Name")
+                )
+            except Exception:
+                name = None
+
+            if name and name.lower() == requested_name.lower():
+                try:
+                    return timeline_item.GetStart()
+                except Exception:
+                    return None
+
+        return None
+
+    problems = []
+
+    for item in append_items:
+
+        requested_track = item["trackIndex"]
+        requested_frame = item["recordFrame"]
+
+        try:
+            props = item["mediaPoolItem"].GetClipProperty()
+            requested_name = (
+                props.get("File Name") or props.get("Clip Name")
+            )
+        except Exception:
+            requested_name = None
+
+        if requested_name is None:
+            continue
+
+        actual_frame = find_by_name(requested_track, requested_name)
+
+        if actual_frame is not None:
+
+            if actual_frame != requested_frame:
+                problems.append(
+                    (
+                        requested_track,
+                        requested_name,
+                        requested_frame,
+                        requested_track,
+                        actual_frame,
+                    )
+                )
+
+            continue
+
+        # Not on the requested track - search every other video
+        # track before concluding it's missing entirely.
+        actual_track = None
+
+        for other_index in range(1, track_count + 1):
+
+            if other_index == requested_track:
+                continue
+
+            found_frame = find_by_name(other_index, requested_name)
+
+            if found_frame is not None:
+                actual_track = other_index
+                actual_frame = found_frame
+                break
+
+        problems.append(
+            (
+                requested_track,
+                requested_name,
+                requested_frame,
+                actual_track,
+                actual_frame,
+            )
+        )
+
+    if problems:
+
+        print()
+        print(
+            f"WARNING: {len(problems)} clip(s) did not land where "
+            f"requested:"
+        )
+
+        for (
+            requested_track,
+            name,
+            requested_frame,
+            actual_track,
+            actual_frame,
+        ) in problems[:15]:
+
+            if actual_track is None:
+                print(
+                    f"  - {name}: requested Track {requested_track} "
+                    f"frame {requested_frame}, NOT FOUND on ANY "
+                    f"video track"
+                )
+            elif actual_track != requested_track:
+                print(
+                    f"  - {name}: requested Track {requested_track} "
+                    f"frame {requested_frame}, actually landed on "
+                    f"Track {actual_track} frame {actual_frame}"
+                )
+            else:
+                print(
+                    f"  - {name}: requested Track {requested_track} "
+                    f"frame {requested_frame}, actually at frame "
+                    f"{actual_frame} on the same track"
+                )
+
+        if len(problems) > 15:
+            print(f"  ... and {len(problems) - 15} more")
+
+    return problems

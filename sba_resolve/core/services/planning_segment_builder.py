@@ -36,6 +36,7 @@ class PlanningSegmentBuilder:
         self,
         media_files: Iterable[MediaFile],
         ride_day: int = 1,
+        scene: int = 1,
     ) -> list[PlanningSegment]:
         """
         Build PlanningSegments from chronologically sorted media.
@@ -44,11 +45,16 @@ class PlanningSegmentBuilder:
         ----------
         media_files
             Chronologically sorted MediaFile objects, normally the
-            clips belonging to a single RideDay.
+            clips belonging to a single Scene within a RideDay.
         ride_day
             The RideDay index these clips belong to. Stamped onto
             every resulting PlanningSegment. Defaults to 1 to
             preserve existing single-day behaviour.
+        scene
+            The Scene index (within ride_day) these clips belong
+            to. Stamped onto every resulting PlanningSegment.
+            Defaults to 1 to preserve existing pre-Scene-Detection
+            behaviour.
         """
 
         media = list(media_files)
@@ -58,7 +64,7 @@ class PlanningSegmentBuilder:
 
         segments: list[PlanningSegment] = []
 
-        current_segment = PlanningSegment(ride_day=ride_day)
+        current_segment = PlanningSegment(ride_day=ride_day, scene=scene)
 
         current_camera = self._camera_signature(media[0])
 
@@ -70,7 +76,9 @@ class PlanningSegmentBuilder:
 
                 segments.append(current_segment)
 
-                current_segment = PlanningSegment(ride_day=ride_day)
+                current_segment = PlanningSegment(
+                    ride_day=ride_day, scene=scene
+                )
 
                 current_camera = camera
 

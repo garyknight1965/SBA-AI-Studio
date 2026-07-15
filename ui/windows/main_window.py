@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
 
 from controllers.workspace_controller import WorkspaceController
 from sba_resolve.core.models.workspace import Workspace
+from sba_resolve.core.services.app_settings import (
+    load_gap_compression_settings,
+)
 from ui.layout.dock_manager import DockManager
 from sba_resolve.connector import ResolveConnector
 
@@ -120,6 +123,7 @@ class MainWindow(QMainWindow):
                 ],
                 "media_objects": media_list,
                 "timeline_name": f"{self.workspace.project_name} Master",
+                "gap_compression": load_gap_compression_settings(),
             }
 
             self.statusBar().showMessage("Importing into Resolve...")

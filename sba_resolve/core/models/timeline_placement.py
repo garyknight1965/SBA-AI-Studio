@@ -37,6 +37,8 @@ class TimelinePlacement:
 
     ride_day: int = 1
 
+    scene: int = 1
+
     track_index: int = 1
 
     record_frame: int = 0
@@ -63,6 +65,7 @@ class TimelinePlacement:
             "clip": self.clip_name or self.media_file.filename,
             "camera": self.camera_name or self.media_file.camera_display_name,
             "ride_day": self.ride_day,
+            "scene": self.scene,
             "track": self.track_index,
             "record_frame": self.record_frame,
             "duration_frames": self.duration_frames,

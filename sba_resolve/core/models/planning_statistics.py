@@ -27,6 +27,8 @@ class PlanningStatistics:
 
     ride_days: int = 0
 
+    scenes: int = 0
+
     total_clips: int = 0
 
     total_cameras: int = 0
@@ -52,6 +54,7 @@ class PlanningStatistics:
     def summary(self) -> dict:
         return {
             "ride_days": self.ride_days,
+            "scenes": self.scenes,
             "total_clips": self.total_clips,
             "total_cameras": self.total_cameras,
             "multicam_segments": self.multicam_segments,

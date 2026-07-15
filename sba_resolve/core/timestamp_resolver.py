@@ -1,104 +1,188 @@
 """
+============================================================
 SBA AI Studio
-MI-002C Timestamp Resolver
-
-Resolves the best available timestamp from metadata.
-
-Priority:
-
-1. DateTimeOriginal
-2. CreateDate
-3. MediaCreateDate
-4. QuickTime CreateDate
-5. FileCreateDate
-6. FileModifyDate
+Timestamp Resolver
+Version : 4.0.0 Alpha
+Sprint : ML-004B
+============================================================
 """
 
+from __future__ import annotations
+
+import re
 from datetime import datetime
+from pathlib import Path
 
 
 class TimestampResolver:
+    """
+    Resolve the best available timestamp for a media asset.
 
-    PRIORITY = [
-        "DateTimeOriginal",
+    Resolution order:
+
+        1. CreateDate
+        2. MediaCreateDate
+        3. DateTimeOriginal
+        4. Filename
+        5. File Modified Date
+    """
+
+    DATE_FIELDS = (
         "CreateDate",
         "MediaCreateDate",
-        "TrackCreateDate",
-        "QuickTimeCreateDate",
-        "FileCreateDate",
-        "FileModifyDate"
-    ]
+        "DateTimeOriginal",
+    )
+
+    @classmethod
+    def resolve(cls, metadata: dict) -> datetime | None:
+
+        # ----------------------------------------------------------
+        # 1 Metadata
+        # ----------------------------------------------------------
+
+        for field in cls.DATE_FIELDS:
+
+            value = metadata.get(field)
+
+            if value:
+
+                dt = cls.parse_datetime(value)
+
+                if dt:
+                    return dt
+
+        # ----------------------------------------------------------
+        # 2 Filename
+        # ----------------------------------------------------------
+
+        source = metadata.get("SourceFile")
+
+        if source:
+
+            path = Path(source)
+
+            dt = cls.parse_filename(path.name)
+
+            if dt:
+                return dt
+
+            if path.exists():
+                return datetime.fromtimestamp(path.stat().st_mtime)
+
+        return None
+
+    # ==============================================================
+    # Date parser
+    # ==============================================================
 
     @staticmethod
-    def parse(value):
-        """
-        Convert ExifTool timestamp into datetime.
-        """
+    def parse_datetime(value):
 
-        if value is None:
+        if not value:
             return None
 
-        if isinstance(value, datetime):
-            return value
+        formats = (
 
-        value = str(value)
-
-        formats = [
             "%Y:%m:%d %H:%M:%S",
+
             "%Y-%m-%d %H:%M:%S",
-            "%Y:%m:%d %H:%M:%S%z",
+
+            "%Y:%m:%d %H:%M:%S.%f",
+
             "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S%z",
-        ]
+
+            "%Y-%m-%dT%H:%M:%S.%f",
+        )
 
         for fmt in formats:
+
             try:
                 return datetime.strptime(value, fmt)
-            except Exception:
+
+            except ValueError:
                 pass
 
         return None
 
+    # ==============================================================
+    # Filename parser
+    # ==============================================================
+
     @classmethod
-    def resolve(cls, metadata):
-        """
-        Returns:
+    def parse_filename(cls, filename):
 
-            datetime
-            source field
-            confidence
-        """
+        parsers = (
 
-        for field in cls.PRIORITY:
+            cls._parse_dji,
 
-            if field not in metadata:
-                continue
+            cls._parse_insta360,
 
-            dt = cls.parse(metadata[field])
+        )
+
+        for parser in parsers:
+
+            dt = parser(filename)
 
             if dt:
+                return dt
 
-                confidence = "HIGH"
+        return None
 
-                if field.startswith("File"):
-                    confidence = "LOW"
+    # ==============================================================
+    # DJI
+    #
+    # DJI_20250626_094438_0001.MP4  (original SD-card naming)
+    # dji_fly_20260625_151204_0001_1782454141375_video_beautify.mp4
+    #   (confirmed DJI Fly app export naming)
+    # ==============================================================
 
-                elif field in (
-                    "CreateDate",
-                    "MediaCreateDate",
-                    "TrackCreateDate",
-                    "QuickTimeCreateDate",
-                ):
-                    confidence = "MEDIUM"
+    @staticmethod
+    def _parse_dji(filename):
 
-                return {
-                    "timestamp": dt,
-                    "source": field,
-                    "confidence": confidence,
-                }
+        match = re.search(
 
-        return {
-            "timestamp": None,
-            "source": None,
-            "confidence": "NONE",
-        }
+            r"DJI(?:_FLY)?_(20\d{6})_(\d{6})",
+
+            filename,
+
+            re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        return datetime.strptime(
+
+            match.group(1) + match.group(2),
+
+            "%Y%m%d%H%M%S",
+        )
+
+    # ==============================================================
+    # Insta360
+    #
+    # VID_20250626_094438_001.insv
+    # VID_20250626_094438_001.mp4
+    # ==============================================================
+
+    @staticmethod
+    def _parse_insta360(filename):
+
+        match = re.search(
+
+            r"VID_(20\d{6})_(\d{6})",
+
+            filename,
+
+            re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        return datetime.strptime(
+
+            match.group(1) + match.group(2),
+
+            "%Y%m%d%H%M%S",
+        )

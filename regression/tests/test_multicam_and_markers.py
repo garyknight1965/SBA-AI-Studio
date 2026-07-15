@@ -249,3 +249,53 @@ class MulticamAndMarkersRegressionTest(BaseRegressionTest):
                 "No segment should be flagged as multicam in the "
                 "non-overlapping scenario."
             )
+
+        # ------------------------------------------------
+        # Frame-collision case: both cameras start at the exact
+        # same instant, so the Ride Day marker and the Multicam
+        # marker would both land on frame 0. Resolve only
+        # supports one marker per frame, so these must be merged
+        # into a single marker rather than one silently
+        # overwriting the other when written to Resolve.
+        # ------------------------------------------------
+
+        library3 = MediaLibrary()
+
+        library3.add(
+            self._make_media(
+                "hero13_0004.mp4", "HERO13 Black", day1_start, 60
+            )
+        )
+        library3.add(
+            self._make_media(
+                "hero8_0003.mp4", "HERO8 Black", day1_start, 60
+            )
+        )
+
+        result3 = TimelinePlanningService().plan(library3)
+
+        markers_at_zero = [
+            m for m in result3.markers if m.frame == 0
+        ]
+
+        if len(markers_at_zero) != 1:
+            raise RuntimeError(
+                f"Expected exactly 1 merged marker at frame 0, "
+                f"got {len(markers_at_zero)}. Same-frame markers "
+                f"must be merged, since Resolve only supports one "
+                f"marker per exact frame."
+            )
+
+        merged = markers_at_zero[0]
+
+        if "Ride Day 1" not in merged.title:
+            raise RuntimeError(
+                f"Merged marker lost the Ride Day title: "
+                f"{merged.title!r}"
+            )
+
+        if "Multicam" not in merged.title:
+            raise RuntimeError(
+                f"Merged marker lost the Multicam title: "
+                f"{merged.title!r}"
+            )

@@ -131,7 +131,9 @@ class TimestampResolver:
     # ==============================================================
     # DJI
     #
-    # DJI_20250626_094438_0001.MP4
+    # DJI_20250626_094438_0001.MP4  (original SD-card naming)
+    # dji_fly_20260625_151204_0001_1782454141375_video_beautify.mp4
+    #   (confirmed DJI Fly app export naming)
     # ==============================================================
 
     @staticmethod
@@ -139,7 +141,7 @@ class TimestampResolver:
 
         match = re.search(
 
-            r"DJI_(20\d{6})_(\d{6})",
+            r"DJI(?:_FLY)?_(20\d{6})_(\d{6})",
 
             filename,
 

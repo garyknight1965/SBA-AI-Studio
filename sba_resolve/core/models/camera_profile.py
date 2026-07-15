@@ -49,14 +49,26 @@ class CameraProfile:
     encoder: str = ""
     metaformat: str = ""
 
+    # Distinguishes multiple simultaneous streams from the SAME
+    # physical camera (e.g. an Insta360 X3 exporting two lens
+    # views for one recording moment). Left blank for ordinary,
+    # single-stream cameras.
+    view: str = ""
+
     def is_known(self) -> bool:
         return self.manufacturer != CameraManufacturer.UNKNOWN
 
     @property
     def display_name(self) -> str:
         if self.model and self.model != "Unknown":
-            return f"{self.manufacturer.value} {self.model}"
-        return self.manufacturer.value
+            base = f"{self.manufacturer.value} {self.model}"
+        else:
+            base = self.manufacturer.value
+
+        if self.view:
+            return f"{base} ({self.view})"
+
+        return base
 
     def summary(self) -> dict:
         return {
@@ -69,6 +81,7 @@ class CameraProfile:
             "firmware": self.firmware,
             "encoder": self.encoder,
             "metaformat": self.metaformat,
+            "view": self.view,
         }
 
     def __str__(self) -> str:

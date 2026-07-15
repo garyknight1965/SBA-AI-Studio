@@ -48,6 +48,7 @@ class FakeTimeline:
         self.track_names = {}
         self.markers = {}
         self.timeline_fps = timeline_fps
+        self.items_by_track: dict[int, list] = {}
 
     def GetName(self):
         return self.name
@@ -82,6 +83,11 @@ class FakeTimeline:
             return self.timeline_fps
         return None
 
+    def GetItemListInTrack(self, track_type, index):
+        if track_type != "video":
+            return []
+        return self.items_by_track.get(index, [])
+
 
 class FakeProject:
 
@@ -99,18 +105,60 @@ class FakeProject:
         self.current_timeline = timeline
 
 
+class FakeTimelineItem:
+
+    def __init__(self, media_pool_item, start_frame):
+        self._media_pool_item = media_pool_item
+        self._start_frame = start_frame
+
+    def GetMediaPoolItem(self):
+        return self._media_pool_item
+
+    def GetStart(self):
+        return self._start_frame
+
+
 class FakeMediaPool:
 
     def __init__(self):
         self.append_calls = []
+        self.timeline = None
 
     def CreateEmptyTimeline(self, name):
         timeline = FakeTimeline(name)
+        self.timeline = timeline
         return timeline
 
     def AppendToTimeline(self, items):
         self.append_calls.append(items)
-        return True
+        return self._place(items)
+
+    def _place(self, items):
+        """
+        Places items on self.timeline exactly as requested and
+        returns the resulting FakeTimelineItems - the "everything
+        works correctly" baseline. Subclasses override
+        AppendToTimeline to simulate specific Resolve failure
+        modes, but should still route through this so
+        GetItemListInTrack() reflects what was actually placed.
+        """
+
+        appended = []
+
+        for item in items:
+
+            timeline_item = FakeTimelineItem(
+                item["mediaPoolItem"], item["recordFrame"]
+            )
+
+            if self.timeline is not None:
+                self.timeline.items_by_track.setdefault(
+                    item["trackIndex"], []
+                ).append(timeline_item)
+
+            appended.append(timeline_item)
+
+        return appended
 
 
 class FakeContext:
@@ -221,14 +269,18 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
                 "timeline."
             )
 
-        # Exactly one AppendToTimeline batch call expected.
-        if len(media_pool.append_calls) != 1:
-            raise RuntimeError(
-                f"Expected 1 AppendToTimeline call, got "
-                f"{len(media_pool.append_calls)}."
-            )
+        # One AppendToTimeline call per distinct track is now
+        # expected (ML-018 - splitting per track avoids a
+        # same-frame, cross-track batching issue diagnosed in
+        # Resolve where a clip sharing another track's clip's
+        # exact recordFrame within the SAME batch call could
+        # silently vanish from the timeline entirely).
 
-        items = media_pool.append_calls[0]
+        items = [
+            item
+            for call in media_pool.append_calls
+            for item in call
+        ]
 
         # Only 2 of the 3 planned clips had a matching imported
         # item (hero13_0002.mp4 was "skipped" at import time).
@@ -245,6 +297,13 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
             raise RuntimeError(
                 "Expected clips on 2 different tracks, got "
                 f"{len(track_indexes)}."
+            )
+
+        if len(media_pool.append_calls) != len(track_indexes):
+            raise RuntimeError(
+                "Expected one AppendToTimeline call per distinct "
+                f"track, got {len(media_pool.append_calls)} calls "
+                f"for {len(track_indexes)} track(s)."
             )
 
         # Enough video tracks must have been created.
@@ -311,4 +370,331 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
             raise RuntimeError(
                 f"Expected marker at frame 0 named 'Ride Day 1', "
                 f"got {timeline.markers[0]['name']!r}."
+            )
+
+
+class FakeMediaPoolDropsOne(FakeMediaPool):
+    """
+    Simulates Resolve silently dropping one specific requested
+    clip (e.g. an overlap with existing content on the same
+    video track at the same recordFrame) - AppendToTimeline
+    returns fewer TimelineItems than were requested for whichever
+    call contains that clip, without raising.
+
+    Named rather than positional ("drop the last item"), since
+    create_timeline() now issues one AppendToTimeline call per
+    track (ML-018) - a positional drop would remove the only
+    item in a single-item, single-track call and change the
+    test's intent.
+    """
+
+    def __init__(self, drop_name):
+        super().__init__()
+        self.drop_name = drop_name.lower()
+
+    def AppendToTimeline(self, items):
+        self.append_calls.append(items)
+
+        keep = [
+            item
+            for item in items
+            if self._name_of(item) != self.drop_name
+        ]
+
+        return self._place(keep)
+
+    @staticmethod
+    def _name_of(item):
+        props = item["mediaPoolItem"].GetClipProperty()
+        name = props.get("File Name") or props.get("Clip Name") or ""
+        return name.lower()
+
+
+class FakeMediaPoolWrongPosition(FakeMediaPool):
+    """
+    Simulates Resolve accepting every requested clip (correct
+    count, no dropped-clip warning) while silently placing one
+    or more of them at the WRONG frame - the exact failure mode
+    a count-only check can't catch, and the one behind the
+    "empty-looking track" symptom seen with paired Insta360
+    views.
+    """
+
+    def __init__(self, wrong_position_for):
+        super().__init__()
+        self.wrong_position_for = set(wrong_position_for)
+
+    def AppendToTimeline(self, items):
+        self.append_calls.append(items)
+
+        appended = []
+
+        for item in items:
+
+            props = item["mediaPoolItem"].GetClipProperty()
+            name = props.get("File Name") or props.get("Clip Name")
+
+            actual_frame = item["recordFrame"]
+
+            if name in self.wrong_position_for:
+                # Lands somewhere else entirely, rather than at
+                # the requested recordFrame.
+                actual_frame += 999999
+
+            timeline_item = FakeTimelineItem(
+                item["mediaPoolItem"], actual_frame
+            )
+
+            if self.timeline is not None:
+                self.timeline.items_by_track.setdefault(
+                    item["trackIndex"], []
+                ).append(timeline_item)
+
+            appended.append(timeline_item)
+
+        return appended
+
+
+class CreateTimelineDroppedClipRegressionTest(BaseRegressionTest):
+
+    name = "Create Timeline Dropped Clip Warning (ML-013)"
+
+    category = "Resolve"
+
+    description = (
+        "Verify create_timeline() detects and reports when "
+        "Resolve's AppendToTimeline returns fewer items than "
+        "were requested, instead of silently reporting success."
+    )
+
+    def _make_media(self, filename, camera_model, created, duration_seconds, fps=24.0):
+
+        from sba_resolve.core.models.camera_profile import (
+            CameraManufacturer,
+            CameraProfile,
+            CameraType,
+        )
+        from sba_resolve.core.models.media_file import MediaFile
+
+        profile = CameraProfile(
+            manufacturer=CameraManufacturer.GOPRO,
+            model=camera_model,
+            family="Hero",
+            camera_type=CameraType.ACTION,
+            confidence=100,
+            detection_method="Test Fixture",
+        )
+
+        return MediaFile(
+            filename=filename,
+            full_path=Path(f"/fake/{filename}"),
+            relative_path=Path(filename),
+            extension=".mp4",
+            size=1024,
+            camera_model=camera_model,
+            camera_profile=profile,
+            created=created,
+            duration=str(duration_seconds),
+            fps=fps,
+        )
+
+    def run(self) -> None:
+
+        import io
+        from contextlib import redirect_stdout
+
+        from sba_resolve.commands.create_timeline import create_timeline
+
+        day1_start = datetime(2026, 7, 1, 9, 0, 0)
+
+        media_objects = [
+            self._make_media(
+                "hero13_0001.mp4", "HERO13 Black", day1_start, 60
+            ),
+            self._make_media(
+                "hero8_0001.mp4",
+                "HERO8 Black",
+                day1_start + timedelta(seconds=95),
+                45,
+            ),
+        ]
+
+        imported_items = [
+            FakeClip("hero13_0001.mp4"),
+            FakeClip("hero8_0001.mp4"),
+        ]
+
+        project = FakeProject()
+        media_pool = FakeMediaPoolDropsOne(drop_name="hero8_0001.mp4")
+
+        context = FakeContext(
+            project=project,
+            media_pool=media_pool,
+            project_data={
+                "project_name": "Test Project",
+                "timeline_name": "Test Project Master",
+                "media_objects": media_objects,
+            },
+            imported_items=imported_items,
+        )
+
+        captured = io.StringIO()
+
+        with redirect_stdout(captured):
+            timeline = create_timeline(context)
+
+        output = captured.getvalue()
+
+        if timeline is None:
+            raise RuntimeError(
+                "create_timeline() should not raise or return "
+                "None just because Resolve dropped a clip - it "
+                "should warn and continue."
+            )
+
+        if "WARNING" not in output or "silently dropped" not in output:
+            raise RuntimeError(
+                "Expected a WARNING about silently dropped "
+                "clip(s) when AppendToTimeline returns fewer "
+                "items than requested. Got output:\n" + output
+            )
+
+        # The report should reflect what Resolve ACTUALLY placed
+        # (1), not what was requested (2).
+        if "Timeline created with 1 clips" not in output:
+            raise RuntimeError(
+                "Expected the final summary to report the "
+                "actual placed count (1), not the requested "
+                "count. Got output:\n" + output
+            )
+
+
+class CreateTimelineWrongPositionRegressionTest(BaseRegressionTest):
+
+    name = "Create Timeline Wrong Position Warning (ML-017)"
+
+    category = "Resolve"
+
+    description = (
+        "Verify create_timeline() detects and reports when a "
+        "clip lands at the WRONG frame despite AppendToTimeline "
+        "returning a full, correctly-sized list - the failure "
+        "mode a count-only check can't catch."
+    )
+
+    def _make_media(self, filename, camera_model, created, duration_seconds, fps=24.0):
+
+        from sba_resolve.core.models.camera_profile import (
+            CameraManufacturer,
+            CameraProfile,
+            CameraType,
+        )
+        from sba_resolve.core.models.media_file import MediaFile
+
+        profile = CameraProfile(
+            manufacturer=CameraManufacturer.GOPRO,
+            model=camera_model,
+            family="Hero",
+            camera_type=CameraType.ACTION,
+            confidence=100,
+            detection_method="Test Fixture",
+        )
+
+        return MediaFile(
+            filename=filename,
+            full_path=Path(f"/fake/{filename}"),
+            relative_path=Path(filename),
+            extension=".mp4",
+            size=1024,
+            camera_model=camera_model,
+            camera_profile=profile,
+            created=created,
+            duration=str(duration_seconds),
+            fps=fps,
+        )
+
+    def run(self) -> None:
+
+        import io
+        from contextlib import redirect_stdout
+
+        from sba_resolve.commands.create_timeline import create_timeline
+
+        day1_start = datetime(2026, 7, 1, 9, 0, 0)
+
+        media_objects = [
+            self._make_media(
+                "hero13_0001.mp4", "HERO13 Black", day1_start, 60
+            ),
+            self._make_media(
+                "hero8_0001.mp4",
+                "HERO8 Black",
+                day1_start + timedelta(seconds=95),
+                45,
+            ),
+        ]
+
+        imported_items = [
+            FakeClip("hero13_0001.mp4"),
+            FakeClip("hero8_0001.mp4"),
+        ]
+
+        project = FakeProject()
+
+        # hero8_0001.mp4 will report a full, successful
+        # AppendToTimeline (correct count, no dropped-clip
+        # warning), but actually lands at the wrong frame.
+        media_pool = FakeMediaPoolWrongPosition(
+            wrong_position_for={"hero8_0001.mp4"}
+        )
+
+        context = FakeContext(
+            project=project,
+            media_pool=media_pool,
+            project_data={
+                "project_name": "Test Project",
+                "timeline_name": "Test Project Master",
+                "media_objects": media_objects,
+            },
+            imported_items=imported_items,
+        )
+
+        captured = io.StringIO()
+
+        with redirect_stdout(captured):
+            timeline = create_timeline(context)
+
+        output = captured.getvalue()
+
+        if timeline is None:
+            raise RuntimeError(
+                "create_timeline() should not raise or return "
+                "None for a wrong-position placement - it "
+                "should warn and continue."
+            )
+
+        # Must NOT report a dropped-clip warning - the count was
+        # correct, this is a different failure mode.
+        if "silently dropped" in output:
+            raise RuntimeError(
+                "This scenario has a correct count - it should "
+                "not trigger the dropped-clip warning. Got "
+                "output:\n" + output
+            )
+
+        if (
+            "did not land where requested" not in output
+            or "hero8_0001.mp4" not in output
+        ):
+            raise RuntimeError(
+                "Expected a WARNING naming hero8_0001.mp4 as "
+                "having landed at the wrong frame. Got output:\n"
+                + output
+            )
+
+        if "NOT FOUND" in output:
+            raise RuntimeError(
+                "hero8_0001.mp4 WAS found on its track (just at "
+                "the wrong frame) - should report the actual "
+                "frame, not NOT FOUND. Got output:\n" + output
             )

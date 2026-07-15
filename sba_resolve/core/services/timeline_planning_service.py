@@ -35,13 +35,18 @@ to execute it.
 
 from __future__ import annotations
 
+from sba_resolve.core.models.gap_compression_settings import (
+    GapCompressionSettings,
+)
 from sba_resolve.core.models.planning_result import PlanningResult
 from sba_resolve.core.models.planning_statistics import PlanningStatistics
 from sba_resolve.core.services.day_detector import DayDetector
+from sba_resolve.core.services.gap_compressor import GapCompressor
 from sba_resolve.core.services.multicam_detector import MulticamDetector
 from sba_resolve.core.services.planning_segment_builder import (
     PlanningSegmentBuilder,
 )
+from sba_resolve.core.services.scene_detector import SceneDetector
 from sba_resolve.core.services.timeline_marker_generator import (
     TimelineMarkerGenerator,
 )
@@ -60,11 +65,13 @@ class TimelinePlanningService:
         self,
         timeline_sorter: TimelineSorter | None = None,
         day_detector: DayDetector | None = None,
+        scene_detector: SceneDetector | None = None,
         segment_builder: PlanningSegmentBuilder | None = None,
         placement_builder: TimelinePlacementBuilder | None = None,
         multicam_detector: MulticamDetector | None = None,
         marker_generator: TimelineMarkerGenerator | None = None,
         fps: float | None = None,
+        gap_compression: GapCompressionSettings | None = None,
     ) -> None:
 
         # The real Resolve timeline frame rate, if known at call
@@ -74,6 +81,7 @@ class TimelinePlanningService:
         # service passed in explicitly (assumed pre-configured).
         self.timeline_sorter = timeline_sorter or TimelineSorter()
         self.day_detector = day_detector or DayDetector()
+        self.scene_detector = scene_detector or SceneDetector()
         self.segment_builder = segment_builder or PlanningSegmentBuilder()
         self.placement_builder = (
             placement_builder or TimelinePlacementBuilder(fps=fps)
@@ -84,6 +92,14 @@ class TimelinePlanningService:
         self.marker_generator = (
             marker_generator or TimelineMarkerGenerator()
         )
+
+        # Gap Compression is off by default (GapCompressionSettings()
+        # defaults to enabled=False), which reproduces the original,
+        # fully gap-preserving placement behaviour exactly. Built
+        # once per plan() call and shared with both the placement
+        # builder and the multicam detector so they can't disagree
+        # about where "now" falls on the compressed timeline.
+        self.gap_compressor = GapCompressor(gap_compression)
 
     def plan(self, media_library) -> PlanningResult:
         """
@@ -107,23 +123,46 @@ class TimelinePlanningService:
         # Detect ride days (gap-based grouping)
         ride_days = self.day_detector.detect(sorted_media)
 
-        # Build planning segments, one RideDay at a time so each
-        # segment is stamped with the correct ride_day index.
-        segments = []
+        # Detect scenes within each ride day (a finer-grained,
+        # smaller-threshold version of the same gap-based
+        # grouping - a Scene is the smallest editing unit, e.g. a
+        # fuel stop or a stretch of riding between stops), then
+        # build planning segments one Scene at a time so each
+        # segment is stamped with the correct ride_day AND scene
+        # index.
+        scenes = []
 
         for ride_day in ride_days:
-            segments.extend(
-                self.segment_builder.build(
+            scenes.extend(
+                self.scene_detector.detect(
                     ride_day.clips,
                     ride_day=ride_day.index,
                 )
             )
 
+        segments = []
+
+        for scene in scenes:
+            segments.extend(
+                self.segment_builder.build(
+                    scene.clips,
+                    ride_day=scene.ride_day,
+                    scene=scene.index,
+                )
+            )
+
+        # Build the (possibly identity) real-time -> effective-time
+        # map ONCE for this plan() call, over every clip involved,
+        # so placement and multicam detection can't disagree.
+        gap_map = self.gap_compressor.build_map(sorted_media)
+
         # Determine frame-accurate placements
-        placements = self.placement_builder.build(segments)
+        placements = self.placement_builder.build(segments, gap_map)
 
         # Detect real overlapping-camera windows
-        multicam_candidates = self.multicam_detector.detect(placements)
+        multicam_candidates = self.multicam_detector.detect(
+            placements, gap_map
+        )
 
         # Flag segments that participate in a detected multicam
         # window (a segment is single-camera by construction, so
@@ -150,6 +189,7 @@ class TimelinePlanningService:
         # Assemble statistics
         statistics = self._build_statistics(
             ride_days=ride_days,
+            scenes=scenes,
             sorted_media=sorted_media,
             segments=segments,
             placements=placements,
@@ -171,6 +211,7 @@ class TimelinePlanningService:
     @staticmethod
     def _build_statistics(
         ride_days,
+        scenes,
         sorted_media,
         segments,
         placements,
@@ -211,6 +252,7 @@ class TimelinePlanningService:
 
         return PlanningStatistics(
             ride_days=len(ride_days),
+            scenes=len(scenes),
             total_clips=len(sorted_media),
             total_cameras=len(cameras),
             multicam_segments=multicam_segments,

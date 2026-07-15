@@ -28,6 +28,7 @@ from typing import Iterable
 
 from sba_resolve.core.models.multicam_candidate import MulticamCandidate
 from sba_resolve.core.models.timeline_placement import TimelinePlacement
+from sba_resolve.core.services.gap_compressor import GapCompressionMap
 from sba_resolve.core.services.timeline_fps import DEFAULT_PROJECT_FPS
 
 
@@ -46,19 +47,38 @@ class MulticamDetector:
     def detect(
         self,
         placements: Iterable[TimelinePlacement],
+        gap_map: GapCompressionMap | None = None,
     ) -> list[MulticamCandidate]:
+        """
+        Parameters
+        ----------
+        placements
+            TimelinePlacements to scan for overlapping-camera
+            windows.
+        gap_map
+            Optional GapCompressionMap. Must be the SAME
+            instance used to build `placements` (via
+            TimelinePlacementBuilder), or the anchor-based
+            frame conversion below will disagree with the
+            actual timeline. Defaults to an identity map (no
+            compression), matching the original behaviour.
+        """
 
         placements = list(placements)
 
         if not placements:
             return []
 
-        # Every placement shares the same project_start and the
-        # same DEFAULT_PROJECT_FPS (see TimelinePlacementBuilder),
-        # so any single placement's (created, record_frame) pair
-        # anchors the same linear real-time -> frame mapping for
-        # the whole project. Used to convert overlap-window
-        # boundaries (computed in real time) back to frames.
+        gap_map = gap_map or GapCompressionMap()
+
+        # Every placement shares the same project_start, the same
+        # DEFAULT_PROJECT_FPS, and the same gap_map (see
+        # TimelinePlacementBuilder), so any single placement's
+        # (created, record_frame) pair anchors the same real-time
+        # -> frame mapping for the whole project (piecewise-linear
+        # when Gap Compression is enabled, linear otherwise). Used
+        # to convert overlap-window boundaries (computed in real
+        # time) back to frames.
         anchor = placements[0]
 
         by_day: dict[int, list[TimelinePlacement]] = defaultdict(list)
@@ -70,7 +90,7 @@ class MulticamDetector:
 
         for ride_day in sorted(by_day):
             candidates.extend(
-                self._detect_for_day(by_day[ride_day], anchor)
+                self._detect_for_day(by_day[ride_day], anchor, gap_map)
             )
 
         return candidates
@@ -79,10 +99,19 @@ class MulticamDetector:
         self,
         time: datetime,
         anchor: TimelinePlacement,
+        gap_map: GapCompressionMap,
     ) -> int:
 
+        # With an identity gap_map (Gap Compression disabled),
+        # effective_time(t) == t, so this is exactly the original
+        # linear real-time -> frame formula.
+        effective_time = gap_map.effective_time(time)
+        effective_anchor_time = gap_map.effective_time(
+            anchor.media_file.created
+        )
+
         offset_seconds = (
-            time - anchor.media_file.created
+            effective_time - effective_anchor_time
         ).total_seconds()
 
         return anchor.record_frame + round(
@@ -93,6 +122,7 @@ class MulticamDetector:
         self,
         day_placements: list[TimelinePlacement],
         anchor: TimelinePlacement,
+        gap_map: GapCompressionMap,
     ) -> list[MulticamCandidate]:
 
         intervals = []
@@ -184,8 +214,12 @@ class MulticamDetector:
                 continue
 
             candidate = MulticamCandidate(
-                start_frame=self._frame_for_time(window_start, anchor),
-                end_frame=self._frame_for_time(window_end, anchor),
+                start_frame=self._frame_for_time(
+                    window_start, anchor, gap_map
+                ),
+                end_frame=self._frame_for_time(
+                    window_end, anchor, gap_map
+                ),
                 confidence=1.0,
                 reason=(
                     "Overlapping capture: "

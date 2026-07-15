@@ -37,6 +37,8 @@ class PlanningSegment:
 
     ride_day: int = 1
 
+    scene: int = 1
+
     start_frame: int = 0
 
     end_frame: int = 0
@@ -101,6 +103,7 @@ class PlanningSegment:
 
         return {
             "ride_day": self.ride_day,
+            "scene": self.scene,
             "start_frame": self.start_frame,
             "end_frame": self.end_frame,
             "duration_frames": self.duration_frames,
@@ -114,7 +117,7 @@ class PlanningSegment:
         cameras = ", ".join(self.camera_names) or "No Cameras"
 
         return (
-            f"Ride {self.ride_day} | "
+            f"Ride {self.ride_day} Scene {self.scene} | "
             f"{self.start_frame}-{self.end_frame} | "
             f"{cameras}"
         )
