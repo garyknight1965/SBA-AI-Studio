@@ -32,7 +32,30 @@ Scanner -> Source Media Validation -> Metadata -> Capture Time
         -> Scene Detection -> Multicam Detection -> Timeline Builder
         -> Resolve
 ```
+## v0.5.0
 
+**New: Transcript → IntelliScript AI Editor**
+Load a DaVinci Resolve transcript export, let a local Ollama model
+decide what to cut (dead air, filler, rambling asides) and how to
+group paragraphs, then get back a script ready for IntelliScript -
+with every kept word guaranteed verbatim, since the AI only ever
+returns keep/cut decisions, never rewritten text.
+
+**Corruption detection is now structural, not just header-deep**
+The Corruption Detector now walks the actual MP4/MOV box structure
+and catches the real failure mode a camera freeze or power loss
+leaves behind: a file with a valid header and plausible size, but
+no `moov` index at all. Corrupted files are now also skipped
+automatically before Resolve import, instead of failing there with
+no explanation.
+
+**Fixes**
+- Completed ML-031 timestamp/multicam confidence wiring
+  (`resolve_with_source`, `MulticamConfidenceScorer`)
+- Completed `RideSummaryBuilder.build_scenes()` for per-scene
+  duration/camera/multicam/HERO13-audio facts
+- Project Database persistence for missing/new/corrupted file
+  tracking across scans
 ---
 
 # Features
