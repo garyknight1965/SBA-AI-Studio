@@ -14,6 +14,7 @@ from ui.widgets.media_browser_widget import MediaBrowserWidget
 from ui.widgets.metadata_widget import MetadataWidget
 from ui.widgets.statistics_widget import StatisticsWidget
 from ui.widgets.timeline_widget import TimelineWidget
+from ui.widgets.transcript_widget import TranscriptWidget
 from ui.widgets.youtube_metadata_widget import YouTubeMetadataWidget
 from sba_resolve.core.services.timeline_planning_service import (
     TimelinePlanningService,
@@ -37,6 +38,7 @@ class DockManager:
         self.statistics_panel = StatisticsWidget()
         self.timeline_panel = TimelineWidget()
         self.youtube_panel = YouTubeMetadataWidget()
+        self.transcript_panel = TranscriptWidget()
 
         self._add("Workspace", self.workspace_tree, Qt.LeftDockWidgetArea)
         self._add("Media Browser", self.media_browser, Qt.LeftDockWidgetArea)
@@ -46,6 +48,9 @@ class DockManager:
         self._add(
             "YouTube Metadata", self.youtube_panel, Qt.BottomDockWidgetArea
         )
+        self._add(
+            "Transcript", self.transcript_panel, Qt.BottomDockWidgetArea
+        )
 
         self.main_window.workspace_tree = self.workspace_tree
         self.main_window.media_browser = self.media_browser
@@ -53,6 +58,7 @@ class DockManager:
         self.main_window.statistics_panel = self.statistics_panel
         self.main_window.timeline_panel = self.timeline_panel
         self.main_window.youtube_panel = self.youtube_panel
+        self.main_window.transcript_panel = self.transcript_panel
 
         # Selecting a clip in EITHER the workspace tree or the
         # media browser table populates the Metadata panel -
@@ -77,6 +83,7 @@ class DockManager:
         self.statistics_panel.update_statistics(workspace.media)
         self.metadata_panel.clear()
         self.youtube_panel.clear()
+        self.transcript_panel.clear()
         self._refresh_timeline_preview(workspace)
 
     def _refresh_timeline_preview(self, workspace):
