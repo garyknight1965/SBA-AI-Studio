@@ -72,6 +72,64 @@ class TimestampResolver:
         return None
 
     # ==============================================================
+    # Resolve, reporting WHICH source won
+    #
+    # Same resolution order as resolve(), but also returns the
+    # name of the source that produced the timestamp, so callers
+    # (MetadataMapper -> ConfidenceEngine) can score how much to
+    # trust it. Used instead of resolve() wherever that source
+    # name is needed; resolve() itself is left untouched.
+    # ==============================================================
+
+    @classmethod
+    def resolve_with_source(
+        cls, metadata: dict
+    ) -> tuple[datetime | None, str | None]:
+
+        # ----------------------------------------------------------
+        # 1 Metadata
+        # ----------------------------------------------------------
+
+        for field in cls.DATE_FIELDS:
+
+            value = metadata.get(field)
+
+            if value:
+
+                dt = cls.parse_datetime(value)
+
+                if dt:
+                    return dt, field
+
+        # ----------------------------------------------------------
+        # 2 Filename
+        # ----------------------------------------------------------
+
+        source = metadata.get("SourceFile")
+
+        if source:
+
+            path = Path(source)
+
+            for parser, source_name in (
+                (cls._parse_dji, "DJI Filename"),
+                (cls._parse_insta360, "Insta360 Filename"),
+            ):
+
+                dt = parser(path.name)
+
+                if dt:
+                    return dt, source_name
+
+            if path.exists():
+                return (
+                    datetime.fromtimestamp(path.stat().st_mtime),
+                    "FileModified",
+                )
+
+        return None, None
+
+    # ==============================================================
     # Date parser
     # ==============================================================
 

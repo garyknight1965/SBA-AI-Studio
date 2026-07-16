@@ -40,6 +40,12 @@ class MulticamCandidate:
 
     approved: bool = False
 
+    # ------------------------------------------------------------------
+    # Ride Reconstruction context (ML-031)
+    # ------------------------------------------------------------------
+
+    ride_day: int = 0
+
     @property
     def duration_frames(self) -> int:
         return max(0, self.end_frame - self.start_frame)

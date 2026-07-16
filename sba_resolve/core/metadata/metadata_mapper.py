@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from sba_resolve.core.models.media_file import MediaFile
+from sba_resolve.core.metadata.confidence_engine import ConfidenceEngine
 from sba_resolve.core.metadata.timestamp_resolver import TimestampResolver
 from sba_resolve.core.services.camera_recognition_engine import CameraRecognitionEngine
 
@@ -60,6 +61,14 @@ class MetadataMapper:
         model = camera_profile.model if camera_profile.is_known() else (item.get("Model") or "Unknown")
         make = camera_profile.manufacturer.value if camera_profile.is_known() else (item.get("Make") or MetadataMapper._infer_make(model))
 
+        created, timestamp_source = TimestampResolver.resolve_with_source(item)
+
+        timestamp_confidence = (
+            ConfidenceEngine.score(timestamp_source)
+            if timestamp_source
+            else 0
+        )
+
         return MediaFile(
             filename=full_path.name,
             full_path=full_path,
@@ -81,8 +90,10 @@ class MetadataMapper:
             sample_rate=MetadataMapper._to_int(item.get("AudioSampleRate")),
             gps_latitude=item.get("GPSLatitude"),
             gps_longitude=item.get("GPSLongitude"),
-            created=TimestampResolver.resolve(item),
+            created=created,
             category=camera_profile.display_name if camera_profile.is_known() else MetadataMapper._category(make,model),
+            timestamp_source=timestamp_source or "",
+            timestamp_confidence=timestamp_confidence,
         )
 
     @staticmethod
