@@ -1,19 +1,25 @@
 """
 Workspace Controller
-Version 5.3.0
-ML-029 GPX GPS Loading
+Version 5.4.0
+ML-030 Project Database & Corruption Detection
 """
 
 from __future__ import annotations
 from pathlib import Path
 
+from sba_resolve.core.database.project_database import ProjectDatabase
 from sba_resolve.core.models.media_validation_report import (
     MediaValidationReport,
 )
+from sba_resolve.core.models.corruption_report import CorruptionReport
+from sba_resolve.core.models.scan_diff import ScanDiff
 from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.project_scanner import ProjectScanner
 from sba_resolve.core.metadata.exiftool_engine import ExifToolEngine
 from sba_resolve.core.metadata.metadata_mapper import MetadataMapper
+from sba_resolve.core.services.corruption_detector import (
+    CorruptionDetector,
+)
 from sba_resolve.core.services.gopro_chapter_resequencer import (
     GoProChapterResequencer,
 )
@@ -35,6 +41,8 @@ class WorkspaceController:
         self.view_assigner = Insta360ViewAssigner()
         self.chapter_resequencer = GoProChapterResequencer()
         self.gpx_gps_loader = GpxGpsLoader()
+        self.corruption_detector = CorruptionDetector()
+        self.project_database = ProjectDatabase(workspace.project_root)
 
         # Populated by the most recent scan_project() call, so
         # callers (CLI, GUI) can inspect or display what was
@@ -43,6 +51,13 @@ class WorkspaceController:
             None
         )
 
+        # Populated by the most recent scan_project() call - the
+        # integrity results from the Corruption Detector and the
+        # Project Database diff (new / missing / corrupted files
+        # since the previous scan).
+        self.last_corruption_report: CorruptionReport | None = None
+        self.last_scan_diff: ScanDiff | None = None
+
         try:
             self.metadata = ExifToolEngine(exiftool_path) if exiftool_path else ExifToolEngine()
         except Exception:
@@ -50,6 +65,9 @@ class WorkspaceController:
 
     def scan_project(self) -> int:
         self.scanner = ProjectScanner(self.workspace.project_root)
+        self.project_database = ProjectDatabase(
+            self.workspace.project_root
+        )
 
         if self.metadata is None:
             media = self.scanner.scan()
@@ -138,6 +156,46 @@ class WorkspaceController:
                 print("  Size   :", m.width, "x", m.height)
                 print("  FPS    :", m.fps)
                 print("  Codec  :", m.codec)
+
+        # ------------------------------------------------------
+        # Integrity check + Project Database (ML-030).
+        #
+        # Runs on whatever was scanned this pass (accepted media
+        # when ExifTool is available, or the raw scan otherwise),
+        # then diffs against the previous Project Database to
+        # surface files that vanished or newly failed an
+        # integrity check since the last scan of this project.
+        # ------------------------------------------------------
+
+        self.last_corruption_report = self.corruption_detector.scan(
+            media
+        )
+
+        self.last_corruption_report.print_report()
+
+        for corrupted in self.last_corruption_report.corrupted:
+            for m in media:
+                if m.full_path == corrupted.full_path:
+                    m.corrupted = True
+                    m.corruption_reason = corrupted.reason
+                    break
+
+        previous_records = self.project_database.load()
+
+        current_records = self.project_database.build_records(
+            media,
+            self.last_corruption_report,
+            previous_records,
+        )
+
+        self.last_scan_diff = self.project_database.diff(
+            previous_records,
+            current_records,
+        )
+
+        self.last_scan_diff.print_report()
+
+        self.project_database.save(current_records)
 
         self.workspace.media.clear()
         self.workspace.media.add_many(media)
