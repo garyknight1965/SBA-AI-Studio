@@ -125,3 +125,101 @@ class RideSummaryBuilder:
                 places.append(name)
 
         return places
+
+    # ------------------------------------------------------------------
+    # Scene-level facts (ML-030)
+    # ------------------------------------------------------------------
+
+    def build_scenes(self, result, fps: float | None = None) -> list[dict]:
+        """
+        Returns one dict per (ride_day, scene), ordered by ride day
+        then scene number:
+
+            {
+                "ride_day": 1,
+                "scene": 2,
+                "clip_count": 2,
+                "duration_minutes": 1.7,
+                "camera_count": 2,
+                "cameras": ["GoPro HERO13 Black", "GoPro HERO8 Black"],
+                "is_multicam": True,
+                "has_hero13_audio": True,
+            }
+
+        Duration is summed from each placement's actual
+        `duration_frames` (real clip length on the timeline), not
+        `PlanningSegment.start_frame`/`end_frame`, which are always
+        zero. `is_multicam` reflects a genuine frame-range overlap
+        with a MulticamCandidate on the same ride day - it isn't
+        just "more than one camera in the scene."
+        """
+
+        fps = fps if fps and fps > 0 else DEFAULT_PROJECT_FPS
+
+        placements_by_scene: dict[tuple[int, int], list] = defaultdict(
+            list
+        )
+
+        for placement in result.placements:
+            key = (placement.ride_day, placement.scene)
+            placements_by_scene[key].append(placement)
+
+        multicam_candidates = list(
+            getattr(result, "multicam_candidates", None) or []
+        )
+
+        return [
+            self._build_scene(
+                ride_day,
+                scene_number,
+                items,
+                fps,
+                multicam_candidates,
+            )
+            for (ride_day, scene_number), items in sorted(
+                placements_by_scene.items()
+            )
+        ]
+
+    def _build_scene(
+        self,
+        ride_day: int,
+        scene_number: int,
+        placements: list,
+        fps: float,
+        multicam_candidates: list,
+    ) -> dict:
+
+        total_duration_seconds = sum(
+            (p.duration_frames or 0) / fps for p in placements
+        )
+
+        cameras = sorted(
+            {p.camera_name for p in placements if p.camera_name}
+        )
+
+        has_hero13_audio = any(
+            p.camera_name and "HERO13" in p.camera_name.upper()
+            for p in placements
+        )
+
+        scene_start = min(p.record_frame for p in placements)
+        scene_end = max(p.end_frame for p in placements)
+
+        is_multicam = any(
+            candidate.ride_day == ride_day
+            and scene_start < candidate.end_frame
+            and scene_end > candidate.start_frame
+            for candidate in multicam_candidates
+        )
+
+        return {
+            "ride_day": ride_day,
+            "scene": scene_number,
+            "clip_count": len(placements),
+            "duration_minutes": round(total_duration_seconds / 60, 1),
+            "camera_count": len(cameras),
+            "cameras": cameras,
+            "is_multicam": is_multicam,
+            "has_hero13_audio": has_hero13_audio,
+        }
