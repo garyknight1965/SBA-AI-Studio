@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QStatusBar,
@@ -23,6 +22,7 @@ from sba_resolve.core.services.app_settings import (
 from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
 from ui.theme import apply_theme
+from ui.widgets.map_widget import MapWidget
 from ui.windows.settings_dialog import SettingsDialog
 from ui.workers.intelliscript_worker import IntelliScriptWorker
 from ui.workers.location_grouping_worker import LocationGroupingWorker
@@ -45,6 +45,12 @@ class MainWindow(QMainWindow):
     GUI-011 (2026-07-19) applies a real dark theme at startup
     (see ui/theme.py) - "theme" existed in config/settings.json
     before this but was never actually read anywhere.
+
+    GUI-012 (2026-07-19) replaces the previously-empty central
+    widget with a real interactive map (see ui/widgets/map_widget.py)
+    - pins per clip GPS location plus a route line from
+    GpxGpsLoader's full trackpoint data. Refreshed whenever the
+    workspace refreshes (open project, after scan).
 
     ML-053 PARTIAL REVERT (2026-07-19): Gary asked to split
     "Scan && Import to Resolve" back into two separate File menu
@@ -74,7 +80,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
 
-        self.setCentralWidget(QLabel("", alignment=Qt.AlignCenter))
+        # GUI-012: real map instead of an empty central QLabel.
+        self.map_widget = MapWidget()
+        self.setCentralWidget(self.map_widget)
 
         self.docks = DockManager(self)
         self.docks.build(self.workspace)
@@ -111,6 +119,11 @@ class MainWindow(QMainWindow):
         # can later pass its "decisions" through to
         # YouTubeMetadataWorker for real edited-video chapter timing.
         self._intelliscript_result: dict | None = None
+
+        # GUI-012: push whatever's already in the (initially
+        # empty) workspace to the map on startup, so it's in a
+        # consistent state from the first frame.
+        self.map_widget.set_media(self.workspace.media)
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -187,6 +200,11 @@ class MainWindow(QMainWindow):
         # Refresh existing widgets instead of rebuilding docks
         self.docks.refresh(self.workspace)
 
+        # GUI-012: a newly opened (as-yet-unscanned) project has
+        # no media yet - clear the map rather than showing the
+        # previous project's pins/route.
+        self.map_widget.set_media(self.workspace.media)
+
         self.statusBar().showMessage(
             f"Project: {self.workspace.project_name}"
         )
@@ -208,6 +226,10 @@ class MainWindow(QMainWindow):
             count = self.controller.scan_project()
 
             self.docks.refresh(self.workspace)
+
+            # GUI-012: refresh the map with the newly scanned
+            # media's GPS pins/route.
+            self.map_widget.set_media(self.workspace.media)
 
             self.statusBar().showMessage(
                 f"Scan complete: {count} files"

@@ -3,7 +3,7 @@
 SBA AI Studio
 GPX GPS Loader
 ML-029-001
-Version : 1.0.0 Alpha
+Version : 1.1.0
 ============================================================
 
 GoPro's embedded GPMF telemetry generally isn't exposed by
@@ -35,6 +35,14 @@ geocoding to the wrong place entirely) is worse than none.
 Only trusted camera models (see TRUSTED_CAMERA_MODELS) have
 their GPX data used at all - other cameras have shown
 unreliable GPS in practice.
+
+Version 1.1.0 (2026-07-19, GUI-012) additionally stamps the
+FULL sequence of good trackpoints onto media.gps_track (not just
+the single middle representative point onto
+gps_latitude/gps_longitude, which is unchanged) - used to draw a
+real route line on the new Map panel. Only populated in the same
+cases the single-point stamping already applies (trusted camera,
+no pre-existing GPS, a good lock exists somewhere in the file).
 """
 
 from __future__ import annotations
@@ -83,12 +91,21 @@ class GpxGpsLoader:
             if gpx_path is None or not gpx_path.exists():
                 continue
 
-            coords = self._representative_trackpoint(gpx_path)
+            good_points = self._good_trackpoints(gpx_path)
 
-            if coords is None:
+            if not good_points:
                 continue
 
-            media.gps_latitude, media.gps_longitude = coords
+            # The middle point, not the first - avoids a GPS
+            # warm-up period at the very start of the recording.
+            media.gps_latitude, media.gps_longitude = good_points[
+                len(good_points) // 2
+            ]
+
+            # GUI-012: the full sequence, for the Map panel's
+            # route line - separate from the single representative
+            # point above, which stays exactly as before.
+            media.gps_track = good_points
 
     @classmethod
     def _is_trusted_camera(cls, media) -> bool:
@@ -111,15 +128,23 @@ class GpxGpsLoader:
         return Path(full_path).with_suffix(".gpx")
 
     @classmethod
-    def _representative_trackpoint(
+    def _good_trackpoints(
         cls,
         gpx_path: Path,
-    ) -> tuple[float, float] | None:
+    ) -> list[tuple[float, float]]:
+        """
+        Returns every trackpoint in the file that achieved a
+        genuine GPS lock (fix == "3d" or no fix tag at all, and
+        PDOP at or below MAX_ACCEPTABLE_PDOP), in file order.
+        Empty list if the file couldn't be parsed, has no
+        trackpoints at all, or never achieved a good lock - a
+        confidently wrong location/route is worse than none.
+        """
 
         try:
             tree = ET.parse(gpx_path)
         except (ET.ParseError, OSError):
-            return None
+            return []
 
         root = tree.getroot()
 
@@ -132,7 +157,7 @@ class GpxGpsLoader:
             trackpoints = root.findall(".//trkpt")
 
         if not trackpoints:
-            return None
+            return []
 
         points = [
             point
@@ -142,30 +167,12 @@ class GpxGpsLoader:
             if point is not None
         ]
 
-        if not points:
-            return None
-
-        good_points = [
+        return [
             (lat, lon)
             for lat, lon, fix, pdop in points
             if (fix is None or fix == "3d")
             and (pdop is None or pdop <= MAX_ACCEPTABLE_PDOP)
         ]
-
-        if not good_points:
-            # Not one trackpoint in the whole file ever achieved
-            # a real GPS lock - this is common right after camera
-            # power-on, and the "position" reported for the whole
-            # clip in that case is often a stale/cached fix from
-            # somewhere else entirely (e.g. a previous location),
-            # not a real estimate of where THIS clip actually is.
-            # Returning nothing is safer than confidently
-            # returning a wrong location.
-            return None
-
-        # The middle point, not the first - avoids a GPS
-        # warm-up period at the very start of the recording.
-        return good_points[len(good_points) // 2]
 
     @classmethod
     def _parse_point(cls, trkpt) -> tuple | None:

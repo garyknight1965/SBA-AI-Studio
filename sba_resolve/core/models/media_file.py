@@ -2,7 +2,7 @@
 ============================================================
 SBA AI Studio
 Media File Domain Model
-Version : 4.0.1
+Version : 4.1.0
 Sprint : ML-003
 ============================================================
 """
@@ -85,6 +85,16 @@ class MediaFile:
 
     gps_latitude: float | None = None
     gps_longitude: float | None = None
+
+    # GUI-012 (2026-07-19): the FULL sequence of good GPS
+    # trackpoints for this clip, in chronological order - used to
+    # draw a real route line on the Map panel. Distinct from
+    # gps_latitude/gps_longitude above, which is a single
+    # representative point (used for pins/Metadata display) and
+    # stays unchanged. Empty by default; only populated for clips
+    # where GpxGpsLoader found a sibling .gpx file with a trusted
+    # camera model (see GpxGpsLoader.TRUSTED_CAMERA_MODELS).
+    gps_track: list[tuple[float, float]] = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # Dates
