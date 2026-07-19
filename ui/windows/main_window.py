@@ -21,6 +21,7 @@ from sba_resolve.core.services.app_settings import (
 )
 from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
+from ui.windows.settings_dialog import SettingsDialog
 from ui.workers.intelliscript_worker import IntelliScriptWorker
 from ui.workers.location_grouping_worker import LocationGroupingWorker
 from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
@@ -34,6 +35,10 @@ class MainWindow(QMainWindow):
     DockManager is created ONCE.
     Opening a project refreshes the existing widgets instead
     of creating new docks.
+
+    GUI-010 (2026-07-19) adds a Settings dialog (Edit menu ->
+    Settings...) so config/settings.json's important toggles can
+    be edited through the app instead of by hand.
     """
 
     def __init__(self):
@@ -123,8 +128,28 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
+        # GUI-010: a real Settings dialog, so config/settings.json's
+        # toggles don't need to be hand-edited.
+        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.addAction("Settings...", self.open_settings)
+
     def _build_toolbar(self):
         self.addToolBar(QToolBar("Main"))
+
+    def open_settings(self):
+        """
+        GUI-010: opens the Settings dialog. Settings are written
+        to config/settings.json immediately on OK (see
+        SettingsDialog._on_accept / app_settings.save_settings) -
+        Cancel leaves the file untouched. Nothing else needs to
+        be refreshed here: every setting is re-read fresh from
+        disk wherever it's used (load_gap_compression_settings(),
+        etc. are all called at the point of use, never cached on
+        MainWindow).
+        """
+
+        dialog = SettingsDialog(self)
+        dialog.exec()
 
     def open_project(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Project")
