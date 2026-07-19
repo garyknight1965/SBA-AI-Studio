@@ -3,18 +3,23 @@
 SBA AI Studio
 Settings Dialog
 GUI-010
-Version : 1.0.0
+Version : 1.1.0
 ============================================================
 
 A real in-app Settings dialog, so config/settings.json's
 important toggles - timeline creation, multicam audio sync,
 Gap Compression, Ollama model, ExifTool path, Resolve module
-path - can be edited through the app instead of by hand.
+path, theme - can be edited through the app instead of by hand.
 
 Reads current values via app_settings.py's load_*() functions
 when opened, and writes every field back via save_settings() as
 one atomic update on OK/Apply - never partially, so a cancelled
 dialog never touches the file at all.
+
+Version 1.1.0 (2026-07-19, GUI-011) adds a dark theme checkbox
+and applies the change immediately via ui.theme.apply_theme() on
+OK, so a theme change is visible right away without restarting
+the app.
 """
 
 from __future__ import annotations
@@ -39,17 +44,20 @@ from sba_resolve.core.services.app_settings import (
     load_multicam_audio_sync_enabled,
     load_ollama_model,
     load_resolve_module_path,
+    load_theme,
     load_timeline_creation_enabled,
     save_settings,
 )
+from ui.theme import apply_theme
 
 
 class SettingsDialog(QDialog):
     """
     Modal Settings dialog. Call exec() to show it; returns
     QDialog.Accepted if the person clicked OK (settings have
-    already been saved to disk at that point), or
-    QDialog.Rejected if they clicked Cancel (nothing was written).
+    already been saved to disk, and the theme already applied,
+    at that point), or QDialog.Rejected if they clicked Cancel
+    (nothing was written or changed).
     """
 
     def __init__(self, parent=None):
@@ -59,6 +67,19 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
+
+        # -----------------------------------------------------
+        # Appearance section
+        # -----------------------------------------------------
+
+        appearance_group = QGroupBox("Appearance")
+        appearance_form = QFormLayout()
+
+        self.dark_theme_check = QCheckBox("Dark theme")
+        appearance_form.addRow(self.dark_theme_check)
+
+        appearance_group.setLayout(appearance_form)
+        layout.addWidget(appearance_group)
 
         # -----------------------------------------------------
         # Resolve section
@@ -192,6 +213,8 @@ class SettingsDialog(QDialog):
 
     def _load_current_values(self):
 
+        self.dark_theme_check.setChecked(load_theme() == "dark")
+
         self.timeline_creation_check.setChecked(
             load_timeline_creation_enabled()
         )
@@ -214,7 +237,12 @@ class SettingsDialog(QDialog):
 
     def _on_accept(self):
 
+        theme_value = "dark" if self.dark_theme_check.isChecked() else (
+            "light"
+        )
+
         updates = {
+            "theme": theme_value,
             "enable_timeline_creation": (
                 self.timeline_creation_check.isChecked()
             ),
@@ -236,5 +264,9 @@ class SettingsDialog(QDialog):
         }
 
         save_settings(updates)
+
+        # GUI-011: apply immediately, so switching theme is visible
+        # right away rather than only on next launch.
+        apply_theme(theme_value)
 
         self.accept()

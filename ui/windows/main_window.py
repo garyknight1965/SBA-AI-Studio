@@ -18,9 +18,11 @@ from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
     load_ollama_model,
+    load_theme,
 )
 from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
+from ui.theme import apply_theme
 from ui.windows.settings_dialog import SettingsDialog
 from ui.workers.intelliscript_worker import IntelliScriptWorker
 from ui.workers.location_grouping_worker import LocationGroupingWorker
@@ -39,10 +41,26 @@ class MainWindow(QMainWindow):
     GUI-010 (2026-07-19) adds a Settings dialog (Edit menu ->
     Settings...) so config/settings.json's important toggles can
     be edited through the app instead of by hand.
+
+    GUI-011 (2026-07-19) applies a real dark theme at startup
+    (see ui/theme.py) - "theme" existed in config/settings.json
+    before this but was never actually read anywhere.
+
+    ML-053 PARTIAL REVERT (2026-07-19): Gary asked to split
+    "Scan && Import to Resolve" back into two separate File menu
+    actions - he wasn't sure about the combined flow.
+    scan_and_import_project() still exists below (unused by the
+    menu now) in case it's ever wanted again.
     """
 
     def __init__(self):
         super().__init__()
+
+        # GUI-011: apply the theme before building any widgets,
+        # so everything (including the dock panels built below)
+        # picks up the stylesheet from its first paint - avoids
+        # a visible flash of unstyled content.
+        apply_theme(load_theme())
 
         self.workspace = Workspace("Untitled", Path.cwd())
         self.controller = WorkspaceController(self.workspace)
@@ -97,16 +115,11 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction("Open Project...", self.open_project)
-        # ML-053: combined per Gary's UI simplification request -
-        # was two separate menu items (Scan Project, then Import to
-        # Resolve). scan_and_import_project() runs both in sequence,
-        # stopping before import if scanning fails. The individual
-        # scan_project()/import_to_resolve() methods still exist
-        # unchanged underneath, in case anything else calls them
-        # directly.
-        file_menu.addAction(
-            "Scan && Import to Resolve", self.scan_and_import_project
-        )
+        # ML-053 PARTIAL REVERT (2026-07-19): back to two separate
+        # actions - Gary wasn't sure about the combined
+        # "Scan && Import to Resolve" flow.
+        file_menu.addAction("Scan Project", self.scan_project)
+        file_menu.addAction("Import to Resolve", self.import_to_resolve)
         file_menu.addSeparator()
         file_menu.addAction(
             "Generate YouTube Metadata", self.generate_youtube_metadata
@@ -116,6 +129,7 @@ class MainWindow(QMainWindow):
         # was two separate menu items (Load Transcript..., then
         # Generate IntelliScript). Save stays a separate, explicit
         # action - Gary specifically wants no silent auto-save.
+        # (Not reverted - Gary only asked about Scan & Import.)
         file_menu.addAction(
             "Load Transcript && Generate IntelliScript...",
             self.load_transcript_and_generate_intelliscript,
@@ -141,11 +155,12 @@ class MainWindow(QMainWindow):
         GUI-010: opens the Settings dialog. Settings are written
         to config/settings.json immediately on OK (see
         SettingsDialog._on_accept / app_settings.save_settings) -
-        Cancel leaves the file untouched. Nothing else needs to
-        be refreshed here: every setting is re-read fresh from
-        disk wherever it's used (load_gap_compression_settings(),
-        etc. are all called at the point of use, never cached on
-        MainWindow).
+        Cancel leaves the file untouched.
+
+        GUI-011: if the theme was changed, SettingsDialog calls
+        apply_theme() itself before returning, so the change is
+        visible immediately without restarting the app - nothing
+        extra needed here.
         """
 
         dialog = SettingsDialog(self)
@@ -183,9 +198,11 @@ class MainWindow(QMainWindow):
         """
         Does the actual scan work; returns True on success, False
         on failure (error dialog already shown). Extracted from
-        scan_project() so scan_and_import_project() (ML-053) can
-        chain into import_to_resolve() only if scanning actually
-        succeeded, without importing on top of a failed/stale scan.
+        scan_project() so scan_and_import_project() (ML-053, no
+        longer wired to the menu as of 2026-07-19 - see class
+        docstring) can chain into import_to_resolve() only if
+        scanning actually succeeded, without importing on top of
+        a failed/stale scan.
         """
         try:
             count = self.controller.scan_project()
@@ -204,10 +221,11 @@ class MainWindow(QMainWindow):
 
     def scan_and_import_project(self):
         """
-        ML-053: combined Scan + Import to Resolve, per Gary's UI
-        simplification request. Only proceeds to import if scanning
-        actually succeeded - importing on top of a failed scan would
-        just import stale or empty media.
+        ML-053: combined Scan + Import to Resolve. No longer
+        wired to the File menu as of 2026-07-19 (Gary asked to
+        revert to two separate buttons - he wasn't sure about the
+        combined flow) - kept here, still fully working, in case
+        it's wanted again later.
         """
 
         if not self._run_scan():
@@ -248,18 +266,6 @@ class MainWindow(QMainWindow):
 
             all_media = list(self.workspace.media)
 
-            # --------------------------------------------------
-            # ML-036: never hand a file the Corruption Detector
-            # already flagged (ML-035, set during scan_project())
-            # to Resolve's own import. Resolve's ImportMedia API
-            # returns nothing useful on failure - it would just
-            # fail again here with no explanation, the way
-            # GX010219.MP4 did before ML-035 existed. Skipping it
-            # at this point means the editor finds out WHY a clip
-            # is missing, in plain language, instead of a bare
-            # "Errors: 1" in the Resolve report.
-            # --------------------------------------------------
-
             media_list, corrupted_media = self._split_media_by_corruption(
                 all_media
             )
@@ -274,16 +280,6 @@ class MainWindow(QMainWindow):
                     "for details on each file.",
                 )
                 return
-
-            # --------------------------------------------------
-            # Determine which Ride Day each clip belongs to, so
-            # bins can be organized as "Day N/Camera" instead of
-            # one flat list of camera bins. This only needs
-            # DayDetector's gap-based grouping - not the full
-            # Planning Engine (Scene Detection, segments,
-            # multicam, placement) - since bin naming only cares
-            # about the day number.
-            # --------------------------------------------------
 
             ride_days = DayDetector().detect(media_list)
 
@@ -302,9 +298,6 @@ class MainWindow(QMainWindow):
                 )
                 return f"Day {day}/{camera}"
 
-            # Every distinct bin_path referenced by scanned media must be
-            # requested here, or sync_bins() will create nothing and every
-            # import will fail with "Media Pool folder not found".
             bin_paths_by_media = {
                 id(m): bin_path_for(m) for m in media_list
             }

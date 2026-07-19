@@ -3,7 +3,7 @@
 SBA AI Studio
 Locations Panel
 ML-040-001
-Version : 1.0.0
+Version : 1.2.0
 ============================================================
 
 Displays scanned media grouped by reverse-geocoded location (see
@@ -13,6 +13,10 @@ network calls (rate-limited to ~1/second per distinct location) -
 same reasoning as YouTubeMetadataWidget/TranscriptWidget: this
 widget is purely display + a trigger signal, the actual work runs
 on a background thread owned by MainWindow.
+
+Version 1.2.0 (2026-07-19, GUI-011) bumps the minimum height from
+200 to 260 - 200 still let the wrapped status text get clipped
+(confirmed via screenshot).
 """
 
 from __future__ import annotations
@@ -36,6 +40,12 @@ class LocationsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # GUI-011: floor height so the wrapped status text and
+        # location list always have room, regardless of how the
+        # dock area splits space between the three right-side
+        # panels.
+        self.setMinimumHeight(260)
 
         self.generate_button = QPushButton("Group by Location")
         self.generate_button.clicked.connect(

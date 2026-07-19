@@ -2,6 +2,14 @@
 SBA AI Studio
 GUI-001-001
 Metadata Panel
+
+GUI-011 (2026-07-19): sets a minimum height so this panel's
+11-row form can't be squeezed below a usable size when stacked
+with Statistics and Locations in the same dock area - previously
+fields like "Camera:"/"Date:" were getting visually clipped with
+no obvious indication content was cut off. 240px wasn't enough
+(confirmed via screenshot - "Date:" still half-clipped); bumped
+to 300px.
 """
 
 from __future__ import annotations
@@ -36,6 +44,11 @@ class MetadataWidget(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
+
+        # GUI-011: floor height so the 11-row form always has
+        # room to breathe, regardless of how the dock area splits
+        # space between Metadata/Statistics/Locations.
+        self.setMinimumHeight(300)
 
         container = QWidget()
         self._form = QFormLayout()

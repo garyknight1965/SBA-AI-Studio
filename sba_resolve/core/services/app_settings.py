@@ -3,7 +3,7 @@
 SBA AI Studio
 App Settings Loader
 ML-019-001
-Version : 1.2.0
+Version : 1.3.0
 ============================================================
 
 Loads user-configurable app settings from config/settings.json,
@@ -17,6 +17,9 @@ Currently exposes:
     load_timeline_creation_enabled() -> bool
     load_multicam_audio_sync_enabled() -> bool
     load_ollama_model() -> str
+    load_exiftool_path() -> str
+    load_resolve_module_path() -> str
+    load_theme() -> str
     save_settings(updates: dict) -> None
 
 To turn Gap Compression on, edit config/settings.json:
@@ -63,9 +66,13 @@ than the default ("llama3.2"), set:
         "ollama_model": "llama3.1:8b"
     }
 
-Version 1.2.0 (2026-07-19) adds save_settings() - a generic
-write-back helper used by the new Settings dialog (GUI-010) so
-these keys can be edited through the app instead of by hand.
+Version 1.2.0 added save_settings() - a generic write-back
+helper used by the Settings dialog (GUI-010).
+
+Version 1.3.0 (2026-07-19, GUI-011) adds load_theme() - reads
+"theme" from config/settings.json, which previously existed as a
+setting but was never actually applied anywhere in the app. See
+ui/theme.py for where it's now used.
 """
 
 from __future__ import annotations
@@ -255,17 +262,44 @@ def load_resolve_module_path(path: Path | None = None) -> str:
     return value
 
 
+def load_theme(path: Path | None = None) -> str:
+    """
+    Reads "theme" from config/settings.json. Returns "dark" if
+    the file is missing, isn't valid JSON, doesn't contain that
+    key, or the value isn't the string "dark" or "light" - this
+    never raises. "dark" is the default (matching the value
+    that's been sitting unused in settings.json) rather than
+    "light", since that's what the setting already implied
+    before it was actually wired up (GUI-011, 2026-07-19).
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    default_theme = "dark"
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_theme
+
+    value = raw.get("theme", default_theme)
+
+    if value not in ("dark", "light"):
+        return default_theme
+
+    return value
+
+
 def save_settings(updates: dict, path: Path | None = None) -> None:
     """
     Merges `updates` into config/settings.json and writes it
     back, preserving every existing key not present in `updates`
-    (e.g. theme, recent_folder, recent_projects) - never
-    overwrites the whole file blindly. Creates config/settings.json
-    (and its parent folder) if it doesn't exist yet, or if the
-    existing file isn't valid JSON (a corrupt settings file is
-    replaced with a fresh one built from `updates` plus defaults,
-    rather than blocking the person from ever saving settings
-    again).
+    (e.g. recent_folder, recent_projects) - never overwrites the
+    whole file blindly. Creates config/settings.json (and its
+    parent folder) if it doesn't exist yet, or if the existing
+    file isn't valid JSON (a corrupt settings file is replaced
+    with a fresh one built from `updates` plus defaults, rather
+    than blocking the person from ever saving settings again).
 
     `updates` uses the same shape as config/settings.json itself -
     top-level keys are merged directly; a nested dict value (e.g.
