@@ -3,7 +3,7 @@
 SBA AI Studio
 App Settings Loader
 ML-019-001
-Version : 1.3.0
+Version : 1.4.0
 ============================================================
 
 Loads user-configurable app settings from config/settings.json,
@@ -69,27 +69,54 @@ than the default ("llama3.2"), set:
 Version 1.2.0 added save_settings() - a generic write-back
 helper used by the Settings dialog (GUI-010).
 
-Version 1.3.0 (2026-07-19, GUI-011) adds load_theme() - reads
-"theme" from config/settings.json, which previously existed as a
-setting but was never actually applied anywhere in the app. See
-ui/theme.py for where it's now used.
+Version 1.3.0 (2026-07-19, GUI-011) adds load_theme().
+
+Version 1.4.0 (2026-07-19, PACKAGING) fixes DEFAULT_SETTINGS_PATH
+for a PyInstaller-frozen build: the old __file__-based lookup
+(Path(__file__).resolve().parents[3]) resolves inside a
+temporary extraction folder once bundled into an .exe, not the
+real install location - settings would either fail to persist or
+get written somewhere useless. When frozen (sys.frozen is True,
+set by PyInstaller at runtime), config/settings.json now resolves
+relative to the directory containing the actual .exe
+(Path(sys.executable).resolve().parent) instead. Running from
+source (sys.frozen unset) is completely unaffected - same
+parents[3]-based path as before.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from sba_resolve.core.models.gap_compression_settings import (
     GapCompressionSettings,
 )
 
-# config/settings.json, relative to the project root. This file
-# lives at sba_resolve/core/services/, so the project root is
-# three levels up.
-DEFAULT_SETTINGS_PATH = (
-    Path(__file__).resolve().parents[3] / "config" / "settings.json"
-)
+
+def _default_settings_path() -> Path:
+    """
+    Resolves config/settings.json's location. When running as a
+    PyInstaller-frozen .exe, this is next to the real executable
+    (so settings persist across runs and are easy for the user to
+    find/edit). When running from source, this is the project
+    root's config/ folder, exactly as before (three levels up
+    from this file's real location: sba_resolve/core/services/).
+    """
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "config" / "settings.json"
+
+    return (
+        Path(__file__).resolve().parents[3] / "config" / "settings.json"
+    )
+
+
+# config/settings.json - see _default_settings_path() for how
+# this resolves differently between a frozen .exe and running
+# from source.
+DEFAULT_SETTINGS_PATH = _default_settings_path()
 
 
 def load_gap_compression_settings(
@@ -267,10 +294,7 @@ def load_theme(path: Path | None = None) -> str:
     Reads "theme" from config/settings.json. Returns "dark" if
     the file is missing, isn't valid JSON, doesn't contain that
     key, or the value isn't the string "dark" or "light" - this
-    never raises. "dark" is the default (matching the value
-    that's been sitting unused in settings.json) rather than
-    "light", since that's what the setting already implied
-    before it was actually wired up (GUI-011, 2026-07-19).
+    never raises.
     """
 
     settings_path = path or DEFAULT_SETTINGS_PATH
