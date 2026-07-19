@@ -18,44 +18,16 @@ The Planning Engine decides *what should happen*. The Resolve Builder executes i
 
 Version
 
-0.7.0-alpha (update to match your latest `git tag` - see note below)
+2.1.0
 
 Current Milestone
 
-Core Ride Reconstruction Pipeline - Complete
+Core Ride Reconstruction Pipeline - Complete, Publishing Metadata + Multi-Camera Sync in progress
 
-The full pipeline described in the project's architecture handover now exists end to end:
+The full pipeline described in the project's architecture handover exists end to end:
 
-```
-Scanner -> Source Media Validation -> Metadata -> Capture Time
-        -> Media Library -> Timeline Sorter -> Ride Day Detection
-        -> Scene Detection -> Multicam Detection -> Timeline Builder
-        -> Resolve
-```
-## v0.5.0
+See `CHANGELOG.md` for detailed release history.
 
-**New: Transcript → IntelliScript AI Editor**
-Load a DaVinci Resolve transcript export, let a local Ollama model
-decide what to cut (dead air, filler, rambling asides) and how to
-group paragraphs, then get back a script ready for IntelliScript -
-with every kept word guaranteed verbatim, since the AI only ever
-returns keep/cut decisions, never rewritten text.
-
-**Corruption detection is now structural, not just header-deep**
-The Corruption Detector now walks the actual MP4/MOV box structure
-and catches the real failure mode a camera freeze or power loss
-leaves behind: a file with a valid header and plausible size, but
-no `moov` index at all. Corrupted files are now also skipped
-automatically before Resolve import, instead of failing there with
-no explanation.
-
-**Fixes**
-- Completed ML-031 timestamp/multicam confidence wiring
-  (`resolve_with_source`, `MulticamConfidenceScorer`)
-- Completed `RideSummaryBuilder.build_scenes()` for per-scene
-  duration/camera/multicam/HERO13-audio facts
-- Project Database persistence for missing/new/corrupted file
-  tracking across scans
 ---
 
 # Features
@@ -74,10 +46,16 @@ Current
 - Gap Compression, fully configurable via `config/settings.json` (off by default)
 - Media Pool bins organized per Day > Camera
 - Resolve Timeline Builder using real `TimelinePlacement` data, with three layers of write verification (count check, per-track append, actual-position verification against Resolve's own timeline state) - can be switched off entirely via `config/settings.json` (`enable_timeline_creation`) without touching any planning/placement code
-- YouTube metadata generation (title/description/tags) from ride reconstruction data (ride days, scenes, duration, cameras, GPS-derived locations) via a local Ollama model - runs independently of Resolve (`generate_youtube_metadata.py`)
-- Basic desktop GUI (PySide6): workspace tree, media browser, metadata panel, project statistics, and a local Day/Scene timeline preview - all Resolve-independent
+- Transcript -> IntelliScript AI Editor: local Ollama model decides keep/cut and paragraph grouping from a Resolve transcript export, verbatim wording always preserved
+- IntelliScript-based chapter generation: real edited-video chapter timestamps (not raw-footage timing) with AI-generated topic labels and duration-based consolidation
+- YouTube metadata generation (title/description/tags/chapters) from ride reconstruction data (ride days, scenes, duration, cameras, GPS-derived locations) via a local Ollama model - runs independently of Resolve
+- Basic desktop GUI (PySide6): workspace tree, media browser, metadata panel, project statistics, and a local Day/Scene timeline preview - all Resolve-independent, with simplified combined Scan+Import and Transcript+IntelliScript File menu actions
 - Resolve scripting module auto-located (env var / config / OS default paths), instead of depending on machine-wide setup outside this project
-- Regression suite: 24+ tests, fully platform-independent (no hardcoded machine-specific paths)
+- Regression suite: 39+ tests, fully platform-independent (no hardcoded machine-specific paths)
+
+In progress
+
+- ML-054: Multi-camera timeline generation with audio-based sync (GoPro HERO13/HERO8 + Insta360 X3). Step 1 complete: Insta360 X3 filename-pattern detection (real X3 files carry no identifying embedded metadata after Insta360 Studio export, so filename pattern is now the primary detection signal). Audio cross-correlation sync (engine/road noise across frequency bands) tested against real multi-camera footage and found unreliable in practice (4/4 real test pairs weak, including a same-brand GoPro-to-GoPro control) - the feature now targets a "never guess" design where successfully-synced clips are auto-placed and unsynced clips get a named empty placeholder track with filename markers for manual sync in Resolve, with the placeholder path expected to be the common real-world outcome rather than an edge case.
 
 Known gaps against the original architecture vision
 
@@ -95,34 +73,34 @@ Planned (later, per the AI Roadmap)
 
 - Thumbnail suggestions, SEO tags/chapters, story analysis, highlight detection
 - Cloud AI as an optional alternative to local Ollama
+- Single-executable packaging (PyInstaller, bundle ExifTool; Resolve/Ollama stay separate installs)
+- ML-047: Auto-cut preview from IntelliScript decisions (reviewable list of proposed cuts/timecodes, preview-only before any Resolve API auto-cutting)
 
 ---
 
 # Project Structure
-
-```
-SBA-AI-Studio
-│
-├── start.py                        - GUI entry point
-├── generate_youtube_metadata.py    - standalone YouTube metadata generator (no Resolve needed)
-├── run_regression.py               - regression suite entry point
-│
-├── config
-│   └── settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path)
-│
-├── sba_resolve
-│   ├── core                        - Planning Engine, models, metadata/timestamp resolution
-│   ├── commands                    - Resolve Builder commands (create_timeline, sync_bins, etc.)
-│   └── media_pool                  - Media Pool bin/import services
-│
-├── controllers                     - GUI <-> core glue (WorkspaceController)
-├── ui                               - PySide6 desktop GUI (widgets, layout, windows)
-├── regression                      - regression test framework and tests
-├── tools                           - bundled ExifTool, dev utility scripts
-└── docs
-```
-
----
+---SBA-AI-Studio
+|
++-- start.py                        - GUI entry point
++-- generate_youtube_metadata.py    - standalone YouTube metadata generator (no Resolve needed)
++-- run_regression.py               - regression suite entry point
+|
++-- config
+|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path)
+|
++-- sba_resolve
+|   +-- core                        - Planning Engine, models, metadata/timestamp resolution, services
+|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, etc.)
+|   +-- media_pool                  - Media Pool bin/import services
+|   +-- ui                          - background workers
+|   +-- tools                       - feature-specific test/diagnostic scripts
+|
++-- controllers                     - GUI <-> core glue (WorkspaceController)
++-- ui                              - PySide6 desktop GUI (widgets, layout, windows)
++-- regression                      - regression test framework and tests
++-- tools                           - bundled ExifTool, dev utility scripts, audio sync diagnostics
++-- docs                            - ADR handoff documents
++-- CHANGELOG.md                    - detailed release history
 
 # Startup
 
@@ -145,51 +123,67 @@ Requires a local Ollama instance running (`ollama serve`) with a model pulled (`
 ---
 
 # Architecture
+The Planning Engine never calls the Resolve API. The Resolve Builder never contains business logic - it only executes what the Planning Engine decided.
 
-```
 start.py
-      │
-      ▼
+|
+v
 Bootstrap
-      │
-      ▼
-Workspace / WorkspaceController  ───────────────►  Planning Engine
-      │                                             (Scanner, Validation, Metadata,
-      ▼                                              Capture Time, Ride Day/Scene/
-Resolve Connector (optional,                         Multicam Detection, Placement)
-config-gated)                                              │
-      │                                                    ▼
-      ▼                                             PlanningResult
+|
+v
+Workspace / WorkspaceController  -------------->  Planning Engine
+|                                            (Scanner, Validation, Metadata,
+v                                             Capture Time, Ride Day/Scene/
+Resolve Connector (optional,                        Multicam Detection, Placement)
+config-gated)                                             |
+|                                                   v
+v                                            PlanningResult
 Resolve Context
-      │
-      ▼
+|
+v
 Resolve Builder Commands
 (create_timeline, sync_bins, ...)
-```
-
-The Planning Engine never calls the Resolve API. The Resolve Builder never contains business logic - it only executes what the Planning Engine decided.
 
 ---
 
 # Development Workflow
 
 Every change follows the same process, enforced by the regression suite:
-
-```
+SBA-AI-Studio
 Inspect existing code
-      │
-      ▼
+|
+v
 Implement (complete files, not snippets)
-      │
-      ▼
+|
+v
 Compile-check
-      │
-      ▼
+|
+v
 Run full regression suite - must stay green
-      │
-      ▼
+|
+v
 git commit (task-ID referenced in the message)
-```
+|
++-- start.py                        - GUI entry point
++-- generate_youtube_metadata.py    - standalone YouTube metadata generator (no Resolve needed)
++-- run_regression.py               - regression suite entry point
+|
++-- config
+|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path)
+|
++-- sba_resolve
+|   +-- core                        - Planning Engine, models, metadata/timestamp resolution, services
+|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, etc.)
+|   +-- media_pool                  - Media Pool bin/import services
+|   +-- ui                          - background workers
+|   +-- tools                       - feature-specific test/diagnostic scripts
+|
++-- controllers                     - GUI <-> core glue (WorkspaceController)
++-- ui                              - PySide6 desktop GUI (widgets, layout, windows)
++-- regression                      - regression test framework and tests
++-- tools                           - bundled ExifTool, dev utility scripts, audio sync diagnostics
++-- docs                            - ADR handoff documents
++-- CHANGELOG.md                    - detailed release history
 
 ---
 
@@ -209,7 +203,7 @@ git commit (task-ID referenced in the message)
 
 Status
 
-In active development - core Ride Reconstruction pipeline complete, structural Resolve-output work (per-day timelines, real multicam clips) still open.
+In active development - core Ride Reconstruction pipeline complete, structural Resolve-output work (per-day timelines, real multicam clips) still open, multi-camera audio-sync (ML-054) in progress.
 
 Regression suite: run `python run_regression.py` before every commit.
 
