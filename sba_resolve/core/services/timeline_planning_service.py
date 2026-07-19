@@ -3,7 +3,7 @@
 SBA AI Studio
 Timeline Planning Service
 ML-011-009
-Version : 2.0.0 Alpha
+Version : 2.1.0
 ============================================================
 
 Planning Engine orchestrator.
@@ -26,11 +26,28 @@ Final ML-011 workflow:
         ↓
     TimelinePlacement[]
         ↓
+    MulticamDetector
+        ↓
+    MulticamAudioSyncService (ML-054 Step 2b)
+        ↓
     PlanningResult
 
 No Resolve API code lives here. This service determines *what*
 should happen; the Resolve Timeline Builder later decides *how*
 to execute it.
+
+Version 2.1.0 (ML-054 Step 2b) adds an audio sync verification
+pass over every detected multicam candidate, right after
+multicam detection and before marker generation. A clip whose
+sync is verified (strong audio correlation against its
+candidate group's reference camera) has its record_frame
+corrected to the audio-derived position. A clip whose sync
+cannot be verified is removed from placements entirely - it is
+never guessed onto the timeline - and recorded in the new
+PlanningResult.unsynced_clips list instead, for the Resolve
+Builder layer to turn into a named placeholder track. Clips
+that are not part of any multicam candidate are completely
+untouched by this pass, exactly as before ML-054.
 """
 
 from __future__ import annotations
@@ -40,8 +57,12 @@ from sba_resolve.core.models.gap_compression_settings import (
 )
 from sba_resolve.core.models.planning_result import PlanningResult
 from sba_resolve.core.models.planning_statistics import PlanningStatistics
+from sba_resolve.core.models.unsynced_clip import UnsyncedClip
 from sba_resolve.core.services.day_detector import DayDetector
 from sba_resolve.core.services.gap_compressor import GapCompressor
+from sba_resolve.core.services.multicam_audio_sync_service import (
+    MulticamAudioSyncService,
+)
 from sba_resolve.core.services.multicam_detector import MulticamDetector
 from sba_resolve.core.services.planning_segment_builder import (
     PlanningSegmentBuilder,
@@ -69,6 +90,7 @@ class TimelinePlanningService:
         segment_builder: PlanningSegmentBuilder | None = None,
         placement_builder: TimelinePlacementBuilder | None = None,
         multicam_detector: MulticamDetector | None = None,
+        multicam_audio_sync_service: MulticamAudioSyncService | None = None,
         marker_generator: TimelineMarkerGenerator | None = None,
         fps: float | None = None,
         gap_compression: GapCompressionSettings | None = None,
@@ -88,6 +110,9 @@ class TimelinePlanningService:
         )
         self.multicam_detector = (
             multicam_detector or MulticamDetector(fps=fps)
+        )
+        self.multicam_audio_sync_service = (
+            multicam_audio_sync_service or MulticamAudioSyncService()
         )
         self.marker_generator = (
             marker_generator or TimelineMarkerGenerator()
@@ -164,10 +189,31 @@ class TimelinePlanningService:
             placements, gap_map
         )
 
+        # ML-054 Step 2b: attempt audio sync verification for every
+        # detected multicam candidate. Clips outside any candidate
+        # are untouched. A verified clip's placement is corrected
+        # in place; an unverified clip is removed from placements
+        # entirely and recorded in unsynced_clips instead - never
+        # guessed onto the timeline.
+        sync_results = self.multicam_audio_sync_service.evaluate(
+            multicam_candidates,
+            placements,
+            fps=self.multicam_detector.fps,
+        )
+
+        placements, unsynced_clips = self._apply_sync_results(
+            placements, sync_results
+        )
+
         # Flag segments that participate in a detected multicam
         # window (a segment is single-camera by construction, so
         # this marks it as "part of a synced moment", not that the
-        # segment itself has multiple active cameras).
+        # segment itself has multiple active cameras). Based on
+        # the ORIGINAL multicam_candidates detection - a clip that
+        # failed audio sync was still genuinely detected as
+        # overlapping in real time, so its segment is still
+        # correctly flagged, even though the clip itself won't be
+        # auto-placed.
         multicam_clip_ids = {
             id(media)
             for candidate in multicam_candidates
@@ -180,7 +226,9 @@ class TimelinePlanningService:
                 for media in segment.available_clips
             )
 
-        # Generate ride-day and multicam markers
+        # Generate ride-day and multicam markers from the FINAL
+        # placement list (post-sync-filtering), so markers don't
+        # reference clips that were pulled off the timeline.
         markers = self.marker_generator.generate(
             placements,
             multicam_candidates,
@@ -205,8 +253,58 @@ class TimelinePlanningService:
             placements=placements,
             markers=markers,
             multicam_candidates=multicam_candidates,
+            unsynced_clips=unsynced_clips,
             statistics=statistics,
         )
+
+    @staticmethod
+    def _apply_sync_results(
+        placements,
+        sync_results,
+    ) -> tuple[list, list[UnsyncedClip]]:
+        """
+        Splits placements into (kept_placements, unsynced_clips)
+        based on the sync_results returned by
+        MulticamAudioSyncService.evaluate().
+
+        A placement with no entry in sync_results was never part
+        of any multicam candidate and is kept completely
+        untouched. A placement whose result is a reference clip
+        or a verified sync has its record_frame corrected (if a
+        corrected_record_frame was provided) and is kept. A
+        placement whose result failed sync is removed from the
+        kept list and converted into an UnsyncedClip instead.
+        """
+
+        if not sync_results:
+            return placements, []
+
+        kept_placements = []
+        unsynced_clips: list[UnsyncedClip] = []
+
+        for placement in placements:
+
+            result = sync_results.get(id(placement.media_file))
+
+            if result is None:
+                kept_placements.append(placement)
+                continue
+
+            if result.is_reference or result.synced:
+                if result.corrected_record_frame is not None:
+                    placement.record_frame = result.corrected_record_frame
+                kept_placements.append(placement)
+                continue
+
+            unsynced_clips.append(
+                UnsyncedClip(
+                    camera_name=placement.camera_name,
+                    clip_name=placement.clip_name,
+                    reason=result.reason,
+                )
+            )
+
+        return kept_placements, unsynced_clips
 
     @staticmethod
     def _build_statistics(
@@ -241,6 +339,12 @@ class TimelinePlanningService:
             placement.duration_frames for placement in placements
         )
 
+        # NOTE (ML-054 Step 2b): this still sums every segment's
+        # available clips regardless of whether a clip was
+        # ultimately excluded from placements by a failed audio
+        # sync, so this can overstate real timeline duration when
+        # unsynced clips exist. Left as a known follow-up rather
+        # than expanded in this commit.
         timeline_duration_seconds = 0.0
 
         for segment in segments:
