@@ -106,3 +106,7 @@ projects/*.backup.json
 .pytest_cache/
 __pycache__/
 *.pyc
+dist/
+build/
+dist/
+build/
