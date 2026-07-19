@@ -4,11 +4,12 @@
     "recent_projects": [],
     "exiftool": "C:\\Tools\\ExifTool\\exiftool\\exiftool.exe",
     "resolve_module_path": "",
-    "enable_timeline_creation": false,
+    "enable_timeline_creation": true,
+    "enable_multicam_audio_sync": false,
     "ollama_model": "llama3.2",
     "gap_compression": {
-        "enabled": false,
+        "enabled": true,
         "gap_threshold_seconds": 60,
-        "compressed_gap_seconds": 2
+        "compressed_gap_seconds": 1
     }
 }

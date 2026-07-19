@@ -3,7 +3,7 @@
 SBA AI Studio
 Multicam Audio Sync Service
 ML-054 Step 2a
-Version: 1.1.0
+Version: 1.3.0
 ============================================================
 
 Productionizes the FFT band-cross-correlation approach proven
@@ -19,43 +19,35 @@ record_frame for every non-reference clip in the group.
 
 Design principle (per Gary, ML-054): never guess. A clip is
 only ever corrected/placed based on audio sync if the
-correlation strength clears STRONG_THRESHOLD. A "moderate"
-result is treated the same as a failure here, since moderate
-correlations were shown (via audio_sync_experiment.py's own
-guidance) to need manual verification - which defeats the
-purpose of automatic placement.
+correlation strength clears STRONG_THRESHOLD.
 
-Version 1.1.0 fixes a real bug found via the regression suite:
-paired Insta360 dual-lens views (same physical camera, front/
-back lens, same recording session - guaranteed the same moment
-by construction, already resolved and distinguished by
+Version 1.1.0 fixed a real bug: paired Insta360 dual-lens views
+(same physical camera, front/back lens - guaranteed the same
+moment by construction, already resolved and distinguished by
 Insta360ViewAssigner via a non-empty camera_profile.view label)
-were incorrectly being sent through audio-sync verification like
-any other multicam candidate. A candidate group where every clip
-already carries a resolved view label is now skipped entirely -
-every clip in it is trusted and left unchanged, exactly like a
-reference clip - since there is no clock drift possible between
-two lenses of the same physical camera.
+were incorrectly being sent through audio-sync verification. A
+candidate group where every clip already carries a resolved view
+label is skipped entirely - trusted and left unchanged.
 
-Real-world testing (2026-07-19, see ML-054 project notes) found
-this approach weak/unreliable across 4/4 real test pairs,
-including a same-brand GoPro-to-GoPro control. This service is
-still built and still attempted per clip group, since:
-  (a) it may occasionally succeed on footage with a stronger
-      shared audio signature,
-  (b) the "never guess" design means a failed sync safely
-      degrades to the placeholder-track path (see Step 2b/2c)
-      rather than a bad automatic placement,
-  (c) the empty-placeholder-track outcome is now understood to
-      be the expected common case, not a rare edge case - this
-      service's job is to correctly identify the rare case where
-      sync DOES work, not to guarantee synchronization happens.
+Version 1.2.0 added mark_all_unsynced(), used when audio sync
+was disabled via config - candidate-scoped, every non-reference
+clip in a detected multicam candidate marked as needing manual
+sync, no audio work attempted.
+
+Version 1.3.0 (2026-07-19) adds is_paired_view_group() - a
+public wrapper around the existing paired-view check, so
+TimelinePlanningService's stricter "only GoPro HERO13 Black
+auto-places" default mode (which now applies project-wide, not
+just to multicam-candidate clips - see Gary's 2026-07-19 scope
+change) can reuse this check without reaching into a private
+method. mark_all_unsynced() remains in the codebase as a
+documented, still-available alternative, but is no longer called
+by TimelinePlanningService's default path.
 
 Reference clip selection always prefers GoPro HERO13 Black
-(lav mic - Gary's most trustworthy/anchor camera), placed
-purely by creation-time order and never itself audio-corrected.
-Every other clip in a candidate group is correlated directly
-against the reference's audio (never against each other).
+(lav mic - Gary's most trustworthy/anchor camera) when
+evaluate() or mark_all_unsynced() run (i.e. when
+enable_multicam_audio_sync is True).
 
 No Resolve API code lives here - only local file/audio analysis
 via ffmpeg and media_file.full_path, consistent with the rest of
@@ -70,20 +62,10 @@ from pathlib import Path
 
 import numpy as np
 
-# Hz. Matches audio_sync_experiment.py - plenty of headroom for
-# engine/wind/road-noise-range analysis (all well under 2kHz),
-# keeps extracted data small and correlation fast.
 SAMPLE_RATE = 4000
 
-# Only a correlation strength at or above this counts as a real,
-# trustworthy sync - matches audio_sync_experiment.py's own
-# "Strong match" cutoff. Below this, the clip is treated as
-# sync-failed, even if it's in the "moderate" 0.3-0.5 range,
-# per the "never guess" design principle.
 STRONG_THRESHOLD = 0.5
 
-# How many seconds of audio to extract and correlate per clip
-# pair, by default. Matches the batch tool's default.
 DEFAULT_SECONDS = 45.0
 
 BANDS = {
@@ -93,13 +75,6 @@ BANDS = {
     "High (800-2000Hz)": (800.0, 2000.0),
 }
 
-# Stable camera priority for choosing which clip in a synced
-# group is the reference/anchor (its position is trusted as-is;
-# other clips get corrected relative to it). Mirrors
-# TimelinePlacementBuilder.DEFAULT_CAMERA_ORDER /
-# CameraTrackBuilder.DEFAULT_ORDER so the whole pipeline agrees
-# on camera priority. HERO13 first per Gary's lav-mic/anchor
-# instruction (2026-07-19).
 DEFAULT_CAMERA_ORDER = [
     "GoPro HERO13 Black",
     "GoPro HERO8 Black",
@@ -153,11 +128,6 @@ class MulticamAudioSyncService:
         Evaluates every multicam candidate group and returns a
         mapping of id(media_file) -> ClipSyncResult, covering
         every clip that appears in at least one candidate.
-
-        Clips that never appear in any multicam candidate are
-        not touched at all - single-camera segments have nothing
-        to sync against and are left completely alone, exactly
-        as they were before this service existed.
         """
 
         placement_by_media_id = {
@@ -188,19 +158,95 @@ class MulticamAudioSyncService:
 
         return results
 
+    def mark_all_unsynced(
+        self,
+        candidates,
+        placements,
+    ) -> dict[int, ClipSyncResult]:
+        """
+        Candidate-scoped placeholder marking (no audio work
+        attempted). Kept available but NOT called by
+        TimelinePlanningService's default path as of 2026-07-19 -
+        superseded there by the stricter, project-wide
+        "only GoPro HERO13 Black auto-places" rule. Still usable
+        directly if that candidate-scoped behaviour is ever
+        wanted again.
+        """
+
+        placement_by_media_id = {
+            id(placement.media_file): placement
+            for placement in placements
+        }
+
+        results: dict[int, ClipSyncResult] = {}
+
+        for candidate in candidates:
+
+            clips = list(candidate.clips)
+
+            if len(clips) < 2:
+                continue
+
+            if self._is_already_paired_view_group(clips):
+                results.update(
+                    self._trust_all_clips(clips, placement_by_media_id)
+                )
+                continue
+
+            reference = self._choose_reference(clips)
+
+            reference_placement = placement_by_media_id.get(id(reference))
+
+            results[id(reference)] = ClipSyncResult(
+                media_file=reference,
+                is_reference=True,
+                synced=True,
+                corrected_record_frame=(
+                    reference_placement.record_frame
+                    if reference_placement
+                    else None
+                ),
+                offset_seconds=0.0,
+                strength=0.0,
+                band=None,
+                reason="Reference clip - position trusted as-is.",
+            )
+
+            for clip in clips:
+
+                if clip is reference:
+                    continue
+
+                results[id(clip)] = ClipSyncResult(
+                    media_file=clip,
+                    is_reference=False,
+                    synced=False,
+                    corrected_record_frame=None,
+                    offset_seconds=None,
+                    strength=0.0,
+                    band=None,
+                    reason=(
+                        "Audio sync is disabled "
+                        "(enable_multicam_audio_sync is false in "
+                        "config/settings.json) - clip needs manual "
+                        "sync in Resolve."
+                    ),
+                )
+
+        return results
+
+    def is_paired_view_group(self, clips) -> bool:
+        """
+        Public wrapper around _is_already_paired_view_group(), so
+        other services (e.g. TimelinePlanningService's
+        HERO13-only default mode) can reuse this check without
+        reaching into a private method.
+        """
+
+        return self._is_already_paired_view_group(clips)
+
     @staticmethod
     def _is_already_paired_view_group(clips) -> bool:
-        """
-        True when every clip in this candidate group already has
-        a resolved view label (set by Insta360ViewAssigner) - a
-        same-physical-camera, dual-lens pairing that is already
-        guaranteed to be in sync by construction. These must
-        never be sent through audio-sync verification: there is
-        no clock drift possible between two lenses of the same
-        camera, and doing so risks incorrectly dropping a
-        legitimately-paired view (found via the regression suite,
-        2026-07-19).
-        """
 
         if len(clips) < 2:
             return False
@@ -217,13 +263,6 @@ class MulticamAudioSyncService:
     def _trust_all_clips(
         clips, placement_by_media_id: dict
     ) -> dict[int, "ClipSyncResult"]:
-        """
-        Marks every clip in an already-paired-view group as
-        trusted/unchanged, using the same result shape as a
-        reference clip so downstream consumers (TimelinePlanningService)
-        treat them identically - kept in placements, position
-        untouched.
-        """
 
         results: dict[int, ClipSyncResult] = {}
 
@@ -290,12 +329,6 @@ class MulticamAudioSyncService:
         return results
 
     def _choose_reference(self, clips):
-        """
-        Picks whichever clip's camera comes first in
-        camera_order as the sync reference/anchor. Falls back to
-        the first clip in the list if none match the known
-        order (e.g. all unrecognised cameras).
-        """
 
         for camera_name in self.camera_order:
             for clip in clips:

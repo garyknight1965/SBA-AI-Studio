@@ -3,7 +3,7 @@
 SBA AI Studio
 Create Timeline Regression Test
 RES-006F.2
-Version : 1.0.0
+Version : 1.1.0
 ============================================================
 
 Verifies sba_resolve.commands.create_timeline.create_timeline()
@@ -18,6 +18,18 @@ confirmed separately via tools/resolve_gap_placement_test.py) -
 it proves create_timeline()'s own wiring logic (track creation,
 camera-based naming, filename matching, skip handling) is
 correct.
+
+Version 1.1.0 (2026-07-19, ML-054 Scope Change #2) adds
+"enable_multicam_audio_sync": True to every test's project_data.
+The real default is now False, under which ONLY GoPro HERO13
+Black auto-places - these three tests all use a HERO8 clip to
+exercise Resolve-wiring mechanics (multi-track separation, drop
+detection, wrong-position detection) that have nothing to do
+with ML-054's camera-eligibility rule, so they explicitly opt
+into the richer per-clip placement path via project_data
+(create_timeline.py already reads this key before falling back
+to config/settings.json) rather than being rewritten around the
+new default.
 """
 
 from __future__ import annotations
@@ -254,6 +266,11 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
                 "project_name": "Test Project",
                 "timeline_name": "Test Project Master",
                 "media_objects": media_objects,
+                # ML-054 Scope Change #2: this test exercises
+                # multi-camera Resolve wiring mechanics, not the
+                # HERO13-only default rule - opt into the richer
+                # per-clip path explicitly.
+                "enable_multicam_audio_sync": True,
             },
             imported_items=imported_items,
         )
@@ -534,6 +551,12 @@ class CreateTimelineDroppedClipRegressionTest(BaseRegressionTest):
                 "project_name": "Test Project",
                 "timeline_name": "Test Project Master",
                 "media_objects": media_objects,
+                # ML-054 Scope Change #2: this test exercises
+                # Resolve's own drop-detection mechanics via a
+                # HERO8 clip - opt into the richer per-clip path
+                # explicitly rather than being excluded by the
+                # new HERO13-only default.
+                "enable_multicam_audio_sync": True,
             },
             imported_items=imported_items,
         )
@@ -655,6 +678,12 @@ class CreateTimelineWrongPositionRegressionTest(BaseRegressionTest):
                 "project_name": "Test Project",
                 "timeline_name": "Test Project Master",
                 "media_objects": media_objects,
+                # ML-054 Scope Change #2: this test exercises
+                # Resolve's own wrong-position-detection mechanics
+                # via a HERO8 clip - opt into the richer per-clip
+                # path explicitly rather than being excluded by
+                # the new HERO13-only default.
+                "enable_multicam_audio_sync": True,
             },
             imported_items=imported_items,
         )

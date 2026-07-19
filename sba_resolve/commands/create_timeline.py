@@ -3,7 +3,7 @@
 SBA AI Studio
 Resolve Command
 Create Timeline
-RES-006F.4 - Real Timeline FPS + Multi-Track Timeline + Markers
+RES-006F.6 - ML-054: Config-gated audio sync + matching audio tracks
 ============================================================
 
 Builds the Resolve timeline using the ML-011 Planning Engine's
@@ -23,10 +23,29 @@ only supports one marker per exact frame.
 
 RES-006F.4 reads the timeline's actual frame rate via
 Timeline.GetSetting("timelineFrameRate") and passes it into the
-Planning Engine, instead of assuming a fixed 25fps. Previously,
-footage shot at a different native frame rate than the timeline
-(e.g. 29.97fps GoPro footage on a 24fps timeline) would drift out
-of true real-time sync.
+Planning Engine, instead of assuming a fixed 25fps.
+
+RES-006F.5 (ML-054 Step 2c) ensures a named track also exists
+for any camera that ONLY has clips the Planning Engine could not
+verify via audio sync (PlanningResult.unsynced_clips) - these
+clips are never appended to the timeline (never guessed), but
+still get a labeled, empty home track ready for manual sync in
+Resolve. A "Manual Sync Required" report is printed listing every
+such clip by camera, with its original filename and the reason
+sync failed.
+
+RES-006F.6 (2026-07-19) reads "enable_multicam_audio_sync" from
+config/settings.json and passes it into TimelinePlanningService -
+OFF by default, since real-world testing found the audio
+correlation approach unreliable on every real footage pair
+tried. With it off, only the trusted reference/anchor camera
+(HERO13 when present) auto-places by timestamp; every other
+camera's multicam clips go straight to the placeholder-track
+path with no audio work attempted at all. This revision also
+creates a matching, identically-named AUDIO track for every
+video track (both the normal per-camera tracks and the new
+placeholder tracks), so a manually-dragged-in clip's audio has
+an obvious, correctly-labeled home too.
 
 No Resolve API code lives in the Planning Engine itself
 (sba_resolve.core.services.timeline_planning_service and its
@@ -38,6 +57,7 @@ from __future__ import annotations
 
 from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
+    load_multicam_audio_sync_enabled,
 )
 from sba_resolve.core.services.timeline_fps import (
     DEFAULT_PROJECT_FPS,
@@ -133,19 +153,6 @@ def create_timeline(context):
 
     imported_by_name = {}
 
-    # Tracks which requested filename each underlying clip was
-    # first seen under - by BOTH Python object identity and by
-    # Resolve's own reported "File Path" property (id() alone can
-    # be unreliable across a scripting/COM bridge, which may hand
-    # back a fresh wrapper object per call even for the same
-    # underlying item - comparing the reported file path is a
-    # more reliable, Resolve-native signal). If Resolve's Media
-    # Pool ever returns the SAME underlying clip for two different
-    # requested filenames (e.g. it deduplicated a paired Insta360
-    # dual-lens export internally, treating both views as one
-    # media item), this catches it directly rather than us
-    # continuing to guess blind - it would fully explain why one
-    # of the pair can never be placed as a distinct timeline item.
     clip_identity_seen: dict[int, str] = {}
     clip_path_seen: dict[str, str] = {}
     duplicate_identity_warnings = []
@@ -212,15 +219,6 @@ def create_timeline(context):
     # -----------------------------------------------------
     # Run the Planning Engine
     # -----------------------------------------------------
-    #
-    # gap_compression is read from project_data if the caller
-    # supplied one (e.g. the GUI loads it from
-    # config/settings.json - see load_gap_compression_settings());
-    # otherwise it falls back to the same config file directly, so
-    # this also works for callers (tests, scripts) that don't set
-    # it explicitly. Either way, an untouched, default
-    # settings.json means Gap Compression stays OFF and placement
-    # is exactly the original, fully gap-preserving behaviour.
 
     gap_compression = context.project_data.get("gap_compression")
 
@@ -237,9 +235,26 @@ def create_timeline(context):
     else:
         print("Gap Compression   : disabled")
 
+    # ML-054 (2026-07-19): read from project_data if the caller
+    # supplied it explicitly, otherwise fall back to
+    # config/settings.json directly - same pattern as
+    # gap_compression above. OFF by default.
+    enable_multicam_audio_sync = context.project_data.get(
+        "enable_multicam_audio_sync"
+    )
+
+    if enable_multicam_audio_sync is None:
+        enable_multicam_audio_sync = load_multicam_audio_sync_enabled()
+
+    print(
+        f"Multicam Audio Sync : "
+        f"{'ENABLED' if enable_multicam_audio_sync else 'disabled'}"
+    )
+
     planning_service = TimelinePlanningService(
         fps=project_fps,
         gap_compression=gap_compression,
+        enable_multicam_audio_sync=enable_multicam_audio_sync,
     )
 
     result = planning_service.plan(media_files)
@@ -277,6 +292,69 @@ def create_timeline(context):
             "video",
             track_index,
             camera_name or f"Track {track_index}",
+        )
+
+    # -----------------------------------------------------
+    # ML-054 Step 2c: ensure a named track also exists for
+    # any camera that ONLY has unsynced clips (no successful
+    # placement at all for that camera). These clips never
+    # reach AppendToTimeline, but still need a labeled home
+    # track ready for manual sync in Resolve.
+    # -----------------------------------------------------
+
+    unsynced_by_camera: dict[str, list] = {}
+
+    for unsynced_clip in result.unsynced_clips:
+        unsynced_by_camera.setdefault(
+            unsynced_clip.camera_name, []
+        ).append(unsynced_clip)
+
+    camera_to_track_index = {
+        camera_name: track_index
+        for track_index, camera_name in track_names.items()
+    }
+
+    for camera_name in sorted(unsynced_by_camera):
+
+        if camera_name in camera_to_track_index:
+            continue
+
+        max_track += 1
+
+        if timeline.GetTrackCount("video") < max_track:
+            if not timeline.AddTrack("video"):
+                raise RuntimeError("Unable to add video track.")
+
+        timeline.SetTrackName(
+            "video",
+            max_track,
+            camera_name or f"Track {max_track}",
+        )
+
+        track_names[max_track] = camera_name
+        camera_to_track_index[camera_name] = max_track
+
+    # -----------------------------------------------------
+    # ML-054 (2026-07-19): create a matching, identically-named
+    # AUDIO track for every camera video track above (both the
+    # normal per-camera tracks and the new placeholder tracks),
+    # so a clip's audio has an obvious, correctly-labeled home
+    # too - not just its video.
+    # -----------------------------------------------------
+
+    max_audio_track = len(track_names)
+
+    while timeline.GetTrackCount("audio") < max_audio_track:
+        if not timeline.AddTrack("audio"):
+            raise RuntimeError("Unable to add audio track.")
+
+    for audio_track_index, camera_name in enumerate(
+        [track_names[i] for i in sorted(track_names)], start=1
+    ):
+        timeline.SetTrackName(
+            "audio",
+            audio_track_index,
+            camera_name or f"Track {audio_track_index}",
         )
 
     # -----------------------------------------------------
@@ -365,15 +443,6 @@ def create_timeline(context):
 
     # -----------------------------------------------------
     # Append per-track, not as one mixed batch.
-    #
-    # Diagnosed via ML-017: two clips sharing the exact same
-    # recordFrame as another clip elsewhere in the SAME batch
-    # (same real moment, different track - e.g. paired Insta360
-    # views) were silently vanishing from the timeline entirely,
-    # even though AppendToTimeline still returned a full-count,
-    # truthy result. Splitting into one AppendToTimeline call per
-    # track removes any possibility of Resolve treating same-frame
-    # items on different tracks as a single-call conflict.
     # -----------------------------------------------------
 
     items_by_track: dict[int, list] = {}
@@ -389,12 +458,6 @@ def create_timeline(context):
 
         track_appended = media_pool.AppendToTimeline(track_items)
 
-        # An empty/falsy result for THIS track doesn't necessarily
-        # mean total failure - it may mean every clip requested
-        # for this track was silently dropped by Resolve, which
-        # the count-mismatch warning below already reports. Only
-        # a totally empty result across every track (checked
-        # after the loop) is treated as a hard failure.
         if track_appended:
             appended_items.extend(track_appended)
 
@@ -402,14 +465,6 @@ def create_timeline(context):
         raise RuntimeError("Failed to append clips to timeline.")
 
     if len(appended_items) != len(append_items):
-
-        # AppendToTimeline can silently drop individual clips
-        # (e.g. an overlap with existing content on the same
-        # video track at the same recordFrame) while still
-        # returning a non-empty, truthy list for the ones that
-        # DID succeed. Checking only truthiness (the previous
-        # behaviour) would report "SUCCESS" even when some clips
-        # never actually reached the timeline.
 
         requested_names = {
             item["mediaPoolItem"].GetClipProperty().get("File Name")
@@ -456,14 +511,41 @@ def create_timeline(context):
     )
 
     # -----------------------------------------------------
-    # Verify every clip actually landed WHERE requested, not
-    # just that a full-count list came back. AppendToTimeline
-    # can return a correctly-sized, truthy list of TimelineItems
-    # while one or more of them ends up at the wrong frame (or
-    # isn't findable on its requested track at all) due to an
-    # internal Resolve conflict - the count check above can't
-    # catch that. Ask the timeline itself, per track, what's
-    # really there.
+    # ML-054 Step 2c: report every clip that could not be
+    # automatically synced/placed - grouped by camera, with
+    # original filenames and the reason, so nothing is
+    # silently missing from the timeline. No timeline markers
+    # are created for these - the named empty track plus this
+    # report is the complete signal.
+    # -----------------------------------------------------
+
+    if result.unsynced_clips:
+
+        print()
+        print("=" * 60)
+        print("Manual Sync Required")
+        print("=" * 60)
+
+        for camera_name in sorted(unsynced_by_camera):
+
+            clips = unsynced_by_camera[camera_name]
+
+            print()
+            print(camera_name)
+            print("Status         : Manual Sync Required")
+            print(
+                f"Track Created  : Yes (Track "
+                f"{camera_to_track_index[camera_name]})"
+            )
+            print("Media Added    : No")
+            print(f"Clips ({len(clips)}):")
+
+            for clip in clips:
+                print(f"  - {clip.clip_name}")
+                print(f"    Reason: {clip.reason}")
+
+    # -----------------------------------------------------
+    # Verify every clip actually landed WHERE requested
     # -----------------------------------------------------
 
     _verify_placements(timeline, append_items)
@@ -471,13 +553,6 @@ def create_timeline(context):
     # -----------------------------------------------------
     # Write ride-day and multicam markers onto the timeline
     # -----------------------------------------------------
-    #
-    # Resolve only supports one marker per exact frame (see
-    # TimelineMarkerGenerator._merge_by_frame, which already
-    # merges same-frame markers before they reach here). A
-    # failed AddMarker() call is reported but doesn't abort the
-    # timeline build - the clips are already placed correctly
-    # regardless of marker outcome.
 
     if result.markers:
 
@@ -516,23 +591,6 @@ def _verify_placements(timeline, append_items):
     Cross-checks every requested placement against what the
     timeline itself reports via GetItemListInTrack(), across
     EVERY video track - not just the one requested.
-
-    AppendToTimeline's return value can look like full success
-    (a truthy list, the right length, no exception) even when a
-    clip's real position on the timeline doesn't match what was
-    requested, lands on a completely different track than
-    requested, or can't be found anywhere at all - the
-    count-only check earlier in create_timeline() can't catch
-    any of these. This asks Resolve's own timeline state
-    directly instead of trusting AppendToTimeline's return
-    value, and searches the whole timeline (not just the
-    requested track) so a clip that landed on the wrong track
-    entirely is reported as exactly that, rather than as
-    "missing".
-
-    Prints a WARNING naming every mismatch found. Never raises -
-    this is diagnostic only, so a bad placement is reported but
-    doesn't abort the rest of the build (markers, etc).
     """
 
     track_count = timeline.GetTrackCount("video") or 0
@@ -601,8 +659,6 @@ def _verify_placements(timeline, append_items):
 
             continue
 
-        # Not on the requested track - search every other video
-        # track before concluding it's missing entirely.
         actual_track = None
 
         for other_index in range(1, track_count + 1):

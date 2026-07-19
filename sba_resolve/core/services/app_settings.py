@@ -3,7 +3,7 @@
 SBA AI Studio
 App Settings Loader
 ML-019-001
-Version : 1.0.0 Alpha
+Version : 1.1.0
 ============================================================
 
 Loads user-configurable app settings from config/settings.json,
@@ -15,6 +15,7 @@ Currently exposes:
 
     load_gap_compression_settings() -> GapCompressionSettings
     load_timeline_creation_enabled() -> bool
+    load_multicam_audio_sync_enabled() -> bool
     load_ollama_model() -> str
 
 To turn Gap Compression on, edit config/settings.json:
@@ -42,6 +43,22 @@ code at all), set:
 
 Timeline creation is ON by default (an absent or malformed key
 reproduces the original, always-create-a-timeline behaviour).
+
+To turn multicam audio sync verification ON (ML-054), set:
+
+    {
+        "enable_multicam_audio_sync": true
+    }
+
+Multicam audio sync is OFF by default (2026-07-19) - real-world
+testing found the FFT band cross-correlation approach unreliable
+across every real footage pair tested, including a same-brand
+GoPro-to-GoPro control. With this OFF, multicam candidate clips
+(other than the trusted HERO13 time-anchor) are never sent
+through audio correlation at all - they go straight to a
+placeholder track for manual sync in Resolve, with no ffmpeg/
+audio work attempted. Flip this on later if a cleaner audio
+setup makes the correlation approach worth trying again.
 
 To use a different Ollama model for YouTube metadata generation
 than the default ("llama3.2"), set:
@@ -132,6 +149,38 @@ def load_timeline_creation_enabled(
 
     if not isinstance(value, bool):
         return True
+
+    return value
+
+
+def load_multicam_audio_sync_enabled(
+    path: Path | None = None,
+) -> bool:
+    """
+    Reads "enable_multicam_audio_sync" from config/settings.json.
+
+    Returns False (audio sync OFF, the current default per
+    Gary's 2026-07-19 decision) if the file is missing, isn't
+    valid JSON, doesn't contain that key, or the value isn't a
+    plain bool - this never raises. Unlike
+    load_timeline_creation_enabled(), the safe default here is
+    OFF, not ON: real-world testing found the correlation
+    approach unreliable, so an absent/malformed key must not
+    silently turn on a feature that risks wasted processing time
+    with no real chance of succeeding.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    value = raw.get("enable_multicam_audio_sync", False)
+
+    if not isinstance(value, bool):
+        return False
 
     return value
 

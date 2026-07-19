@@ -3,7 +3,7 @@
 SBA AI Studio
 Planning Pipeline Regression Test
 ML-011
-Version : 2.0.0
+Version : 2.1.0
 ============================================================
 
 Verifies the full Ride Reconstruction pipeline:
@@ -17,6 +17,14 @@ Version 2 validates the real (ProjectTimeService-based)
 gap-preserving placement semantics: record_frame reflects true
 elapsed seconds since the project's earliest clip, and track
 assignment is stable per camera across ride days.
+
+Version 2.1.0 (2026-07-19, ML-054 Scope Change #2) updates
+expectations for the new real default: TimelinePlanningService()
+with no override has enable_multicam_audio_sync=False, under
+which ONLY GoPro HERO13 Black clips auto-place - hero8_0001.mp4
+now correctly lands in result.unsynced_clips instead of
+result.placements. This is the new intended default behaviour,
+not a regression.
 """
 
 from __future__ import annotations
@@ -36,7 +44,9 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
     description = (
         "Verify MediaLibrary -> TimelinePlanningService.plan() "
         "produces a correct, gap-preserving PlanningResult across "
-        "two ride days and two cameras."
+        "two ride days and two cameras, with HERO13-only "
+        "auto-placement under the default (audio sync disabled) "
+        "configuration."
     )
 
     def _make_media(
@@ -131,6 +141,9 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
             )
         )
 
+        # Real default: TimelinePlanningService() with no override
+        # means enable_multicam_audio_sync=False - only GoPro
+        # HERO13 Black clips auto-place.
         service = TimelinePlanningService()
 
         result = service.plan(library)
@@ -157,19 +170,32 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
 
         # Day 1 should produce 2 segments (Hero13 x2 clips grouped,
         # then Hero8 x1 clip). Day 2 should produce 1 segment.
+        # Segments are unaffected by the HERO13-only placement
+        # rule - every clip still gets a segment regardless of
+        # whether it ends up placed or unsynced.
         if len(result.segments) != 3:
             raise RuntimeError(
                 f"Expected 3 planning segments, got "
                 f"{len(result.segments)}."
             )
 
-        if len(result.placements) != 4:
+        # Only the 3 Hero13 clips auto-place under the default
+        # (audio sync disabled) configuration - hero8_0001.mp4
+        # is excluded and lands in unsynced_clips instead.
+        if len(result.placements) != 3:
             raise RuntimeError(
-                f"Expected 4 placements, got "
+                f"Expected 3 placements (HERO13 clips only), got "
                 f"{len(result.placements)}."
             )
 
         by_clip = {p.clip_name: p for p in result.placements}
+
+        if "hero8_0001.mp4" in by_clip:
+            raise RuntimeError(
+                "hero8_0001.mp4 should NOT be in placements under "
+                "the default (audio sync disabled) configuration - "
+                "only GoPro HERO13 Black auto-places."
+            )
 
         # project_start = the earliest clip in the whole project
         # (hero13_0001.mp4). Every record_frame is relative to it.
@@ -178,7 +204,6 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
         expected_frames = {
             "hero13_0001.mp4": 0,
             "hero13_0002.mp4": round(61 * fps),
-            "hero8_0001.mp4": round(95 * fps),
             "hero13_0003.mp4": round(
                 timedelta(hours=6).total_seconds() * fps
             ),
@@ -201,34 +226,45 @@ class PlanningPipelineRegressionTest(BaseRegressionTest):
                     f"{placement.record_frame}."
                 )
 
+        # hero8_0001.mp4 must instead appear in unsynced_clips,
+        # with the correct camera name, ready for a placeholder
+        # track.
+        unsynced_by_clip = {
+            u.clip_name: u for u in result.unsynced_clips
+        }
+
+        if "hero8_0001.mp4" not in unsynced_by_clip:
+            raise RuntimeError(
+                "Expected hero8_0001.mp4 in result.unsynced_clips "
+                "under the default (audio sync disabled) "
+                "configuration."
+            )
+
+        if unsynced_by_clip["hero8_0001.mp4"].camera_name != (
+            "GoPro HERO8 Black"
+        ):
+            raise RuntimeError(
+                "Expected hero8_0001.mp4's unsynced camera_name to "
+                "be 'GoPro HERO8 Black', got "
+                f"{unsynced_by_clip['hero8_0001.mp4'].camera_name!r}."
+            )
+
         # Ride day stamping must be correct.
         if by_clip["hero13_0003.mp4"].ride_day != 2:
             raise RuntimeError(
                 "hero13_0003.mp4 should belong to ride day 2."
             )
 
-        for clip_name in (
-            "hero13_0001.mp4",
-            "hero13_0002.mp4",
-            "hero8_0001.mp4",
-        ):
+        for clip_name in ("hero13_0001.mp4", "hero13_0002.mp4"):
             if by_clip[clip_name].ride_day != 1:
                 raise RuntimeError(
                     f"{clip_name} should belong to ride day 1."
                 )
 
-        # Hero13 and Hero8 must land on different, stable tracks.
-        hero13_track = by_clip["hero13_0001.mp4"].track_index
-        hero8_track = by_clip["hero8_0001.mp4"].track_index
-
-        if hero13_track == hero8_track:
-            raise RuntimeError(
-                "Hero13 and Hero8 clips were placed on the same "
-                "track."
-            )
-
         # Track assignment must be stable for the same camera
-        # across ride days.
+        # (Hero13) across ride days.
+        hero13_track = by_clip["hero13_0001.mp4"].track_index
+
         if by_clip["hero13_0003.mp4"].track_index != hero13_track:
             raise RuntimeError(
                 "Hero13's track index changed between ride days; "
