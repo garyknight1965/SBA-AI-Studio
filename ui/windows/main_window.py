@@ -22,6 +22,7 @@ from sba_resolve.core.services.app_settings import (
 from sba_resolve.core.services.day_detector import DayDetector
 from ui.layout.dock_manager import DockManager
 from ui.workers.intelliscript_worker import IntelliScriptWorker
+from ui.workers.location_grouping_worker import LocationGroupingWorker
 from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
 from sba_resolve.connector import ResolveConnector
 
@@ -50,7 +51,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
 
-        self.setCentralWidget(QLabel("Timeline Preview", alignment=Qt.AlignCenter))
+        self.setCentralWidget(QLabel("", alignment=Qt.AlignCenter))
 
         self.docks = DockManager(self)
         self.docks.build(self.workspace)
@@ -67,32 +68,58 @@ class MainWindow(QMainWindow):
         self.docks.transcript_panel.save_requested.connect(
             self.save_intelliscript_script
         )
+        self.docks.locations_panel.generate_requested.connect(
+            self.generate_locations
+        )
 
         # Held here so the QThread isn't garbage-collected mid-run.
         self._youtube_worker = None
         self._intelliscript_worker = None
+        self._location_worker = None
 
         # Set by load_transcript() once a file is chosen - the raw
         # text sent to IntelliScriptWorker on Generate.
         self._loaded_transcript_text: str | None = None
 
+        # ML-052: set by _on_intelliscript_succeeded() once
+        # IntelliScript generation finishes - the full result dict
+        # (script/decisions/etc.), kept here (not just handed to
+        # the transcript panel for display) so generate_youtube_metadata()
+        # can later pass its "decisions" through to
+        # YouTubeMetadataWorker for real edited-video chapter timing.
+        self._intelliscript_result: dict | None = None
+
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction("Open Project...", self.open_project)
-        file_menu.addAction("Scan Project", self.scan_project)
-        file_menu.addAction("Import to Resolve", self.import_to_resolve)
+        # ML-053: combined per Gary's UI simplification request -
+        # was two separate menu items (Scan Project, then Import to
+        # Resolve). scan_and_import_project() runs both in sequence,
+        # stopping before import if scanning fails. The individual
+        # scan_project()/import_to_resolve() methods still exist
+        # unchanged underneath, in case anything else calls them
+        # directly.
+        file_menu.addAction(
+            "Scan && Import to Resolve", self.scan_and_import_project
+        )
         file_menu.addSeparator()
         file_menu.addAction(
             "Generate YouTube Metadata", self.generate_youtube_metadata
         )
         file_menu.addSeparator()
-        file_menu.addAction("Load Transcript...", self.load_transcript)
+        # ML-053: combined per Gary's UI simplification request -
+        # was two separate menu items (Load Transcript..., then
+        # Generate IntelliScript). Save stays a separate, explicit
+        # action - Gary specifically wants no silent auto-save.
         file_menu.addAction(
-            "Generate IntelliScript", self.generate_intelliscript
+            "Load Transcript && Generate IntelliScript...",
+            self.load_transcript_and_generate_intelliscript,
         )
         file_menu.addAction(
             "Save IntelliScript Script...", self.save_intelliscript_script
         )
+        file_menu.addSeparator()
+        file_menu.addAction("Group by Location", self.generate_locations)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
@@ -108,6 +135,15 @@ class MainWindow(QMainWindow):
         self.workspace.project_name = Path(folder).name
         self.controller = WorkspaceController(self.workspace)
 
+        # ML-052: a transcript (and any IntelliScript result
+        # generated from it) belongs to the PREVIOUS project - carrying
+        # it forward into a newly opened project would silently
+        # apply the wrong project's transcript/chapters. Confirmed
+        # this wasn't being cleared before; fixed here.
+        self._loaded_transcript_text = None
+        self._intelliscript_result = None
+        self.docks.transcript_panel.set_loaded_file("")
+
         # Refresh existing widgets instead of rebuilding docks
         self.docks.refresh(self.workspace)
 
@@ -116,6 +152,16 @@ class MainWindow(QMainWindow):
         )
 
     def scan_project(self):
+        self._run_scan()
+
+    def _run_scan(self) -> bool:
+        """
+        Does the actual scan work; returns True on success, False
+        on failure (error dialog already shown). Extracted from
+        scan_project() so scan_and_import_project() (ML-053) can
+        chain into import_to_resolve() only if scanning actually
+        succeeded, without importing on top of a failed/stale scan.
+        """
         try:
             count = self.controller.scan_project()
 
@@ -125,8 +171,24 @@ class MainWindow(QMainWindow):
                 f"Scan complete: {count} files"
             )
 
+            return True
+
         except Exception as exc:
             QMessageBox.critical(self, "Scan Error", str(exc))
+            return False
+
+    def scan_and_import_project(self):
+        """
+        ML-053: combined Scan + Import to Resolve, per Gary's UI
+        simplification request. Only proceeds to import if scanning
+        actually succeeded - importing on top of a failed scan would
+        just import stale or empty media.
+        """
+
+        if not self._run_scan():
+            return
+
+        self.import_to_resolve()
 
     @staticmethod
     def _split_media_by_corruption(media_list):
@@ -302,6 +364,15 @@ class MainWindow(QMainWindow):
         doesn't freeze the GUI. This never touches Resolve at
         all - it works even with timeline creation disabled or
         Resolve not connected.
+
+        ML-052: also passes through the currently loaded transcript
+        text and IntelliScript decisions (if both are available for
+        this project), so YouTubeMetadataWorker can append a
+        chapters section built from real edited-video timing rather
+        than raw footage. If IntelliScript hasn't been generated yet
+        for this project, no chapters section is added at all - the
+        worker deliberately does not fall back to raw-footage
+        timing, since that was confirmed wrong for real videos.
         """
 
         if (
@@ -329,10 +400,22 @@ class MainWindow(QMainWindow):
         self.docks.youtube_panel.set_generating(True)
         self.statusBar().showMessage("Generating YouTube metadata...")
 
+        intelliscript_decisions = None
+
+        if self._intelliscript_result and not self._intelliscript_result.get(
+            "parse_error"
+        ):
+            intelliscript_decisions = self._intelliscript_result.get(
+                "decisions"
+            )
+
         self._youtube_worker = YouTubeMetadataWorker(
             media_list=list(self.workspace.media),
             project_name=self.workspace.project_name,
             model=load_ollama_model(),
+            extra_notes=self.docks.youtube_panel.additional_notes(),
+            raw_transcript_text=self._loaded_transcript_text,
+            intelliscript_decisions=intelliscript_decisions,
         )
         self._youtube_worker.succeeded.connect(
             self._on_youtube_metadata_succeeded
@@ -367,6 +450,18 @@ class MainWindow(QMainWindow):
         file path or encoding error surfaces immediately rather
         than only once Generate is clicked.
         """
+        self._run_load_transcript()
+
+    def _run_load_transcript(self) -> bool:
+        """
+        Does the actual file-dialog + read work; returns True if a
+        transcript was successfully loaded, False if the dialog was
+        cancelled or reading failed (error dialog already shown in
+        the failure case). Extracted from load_transcript() so
+        load_transcript_and_generate_intelliscript() (ML-053) can
+        chain into generate_intelliscript() only when there's
+        actually a transcript to generate from.
+        """
 
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -376,7 +471,7 @@ class MainWindow(QMainWindow):
         )
 
         if not path:
-            return
+            return False
 
         try:
             self._loaded_transcript_text = Path(path).read_text(
@@ -386,10 +481,33 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "Could Not Read Transcript", str(exc)
             )
-            return
+            return False
+
+        # ML-052: a newly loaded transcript invalidates any
+        # IntelliScript result generated from a DIFFERENT transcript
+        # - otherwise generate_youtube_metadata() could pair this
+        # new transcript's text with stale decisions from the old
+        # one, silently producing wrong chapter timing.
+        self._intelliscript_result = None
 
         self.docks.transcript_panel.set_loaded_file(Path(path).name)
         self.statusBar().showMessage(f"Transcript loaded: {Path(path).name}")
+
+        return True
+
+    def load_transcript_and_generate_intelliscript(self):
+        """
+        ML-053: combined Load Transcript + Generate IntelliScript,
+        per Gary's UI simplification request. Only proceeds to
+        generate if a transcript was actually loaded - cancelling
+        the file dialog, or a read failure, should not attempt to
+        generate from stale/missing transcript text.
+        """
+
+        if not self._run_load_transcript():
+            return
+
+        self.generate_intelliscript()
 
     def generate_intelliscript(self):
         """
@@ -437,6 +555,11 @@ class MainWindow(QMainWindow):
     def _on_intelliscript_succeeded(self, result: dict):
         self.docks.transcript_panel.set_generating(False)
         self.docks.transcript_panel.set_result(result)
+
+        # ML-052: kept here (not just handed to the transcript panel
+        # for display) so generate_youtube_metadata() can later use
+        # result["decisions"] for real edited-video chapter timing.
+        self._intelliscript_result = result
 
         if result.get("parse_error"):
             self.statusBar().showMessage(
@@ -493,6 +616,60 @@ class MainWindow(QMainWindow):
             return
 
         self.statusBar().showMessage(f"Script saved: {Path(path).name}")
+
+    def generate_locations(self):
+        """
+        Runs LocationGrouper on a background thread
+        (LocationGroupingWorker), since ReverseGeocoder makes real
+        network calls. Never touches Resolve.
+        """
+
+        if (
+            not getattr(self.workspace, "media", None)
+            or self.workspace.is_empty
+        ):
+            QMessageBox.information(
+                self,
+                "Nothing to group",
+                "Scan the project before grouping by location.",
+            )
+            return
+
+        if self._location_worker is not None and (
+            self._location_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Already generating",
+                "A location grouping request is already in "
+                "progress.",
+            )
+            return
+
+        self.docks.locations_panel.set_generating(True)
+        self.statusBar().showMessage("Grouping by location...")
+
+        self._location_worker = LocationGroupingWorker(
+            media_list=list(self.workspace.media),
+        )
+        self._location_worker.succeeded.connect(
+            self._on_locations_succeeded
+        )
+        self._location_worker.failed.connect(self._on_locations_failed)
+        self._location_worker.start()
+
+    def _on_locations_succeeded(self, groups: list):
+        self.docks.locations_panel.set_generating(False)
+        self.docks.locations_panel.set_groups(groups)
+        self.statusBar().showMessage(
+            f"Location grouping complete - {len(groups)} group(s)."
+        )
+
+    def _on_locations_failed(self, message: str):
+        self.docks.locations_panel.set_generating(False)
+        self.docks.locations_panel.set_error(message)
+        self.statusBar().showMessage("Location grouping failed.")
+        QMessageBox.critical(self, "Location Grouping Error", message)
 
 
 if __name__ == "__main__":

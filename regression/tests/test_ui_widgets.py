@@ -18,9 +18,7 @@ to verify:
   before - selecting a row did nothing).
 - WorkspaceTreeWidget still emits media_selected correctly.
 - DockManager actually connects both selection sources to the
-  Metadata panel, and populates the Timeline panel with a real
-  Day/Scene preview from the Planning Engine instead of leaving
-  it permanently empty.
+  Metadata panel.
 """
 
 from __future__ import annotations
@@ -41,9 +39,8 @@ class UiWidgetWiringRegressionTest(BaseRegressionTest):
     category = "Resolve"
 
     description = (
-        "Verify the Statistics duration bug fix, selection "
-        "signal wiring (tree + browser -> metadata panel), and "
-        "the Timeline panel's Planning Engine preview, using "
+        "Verify the Statistics duration bug fix and selection "
+        "signal wiring (tree + browser -> metadata panel), using "
         "real headless PySide6 widgets."
     )
 
@@ -196,30 +193,4 @@ class UiWidgetWiringRegressionTest(BaseRegressionTest):
                 "Selecting a row in the media browser did not "
                 "populate the Metadata panel - DockManager may "
                 "not be connecting clip_selected."
-            )
-
-        # --------------------------------------------------
-        # 4. Timeline panel gets a real Planning Engine preview,
-        #    not the permanent "Timeline is empty" placeholder.
-        # --------------------------------------------------
-
-        timeline_widget = dock_manager.timeline_panel
-
-        if timeline_widget.timeline.count() == 0:
-            raise RuntimeError(
-                "Timeline panel has no content after refresh."
-            )
-
-        first_item_text = timeline_widget.timeline.item(0).text()
-
-        if first_item_text == "Timeline is empty":
-            raise RuntimeError(
-                "Timeline panel still shows the empty placeholder "
-                "despite having media to plan from."
-            )
-
-        if "Day 1" not in first_item_text:
-            raise RuntimeError(
-                f"Expected the Timeline preview to mention 'Day "
-                f"1', got: {first_item_text!r}"
             )

@@ -38,6 +38,13 @@ class YouTubeMetadataWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.notes_field = QLineEdit()
+        self.notes_field.setPlaceholderText(
+            "Optional: a landmark, event, or detail to mention "
+            "(e.g. 'stopped at Stirling Castle') - treated as a "
+            "real fact, not invented by the model"
+        )
+
         self.generate_button = QPushButton("Generate YouTube Metadata")
         self.generate_button.clicked.connect(
             self.generate_requested.emit
@@ -71,9 +78,13 @@ class YouTubeMetadataWidget(QWidget):
         group.setLayout(form)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.notes_field)
         layout.addWidget(self.generate_button)
         layout.addWidget(self.status_label)
         layout.addWidget(group)
+
+    def additional_notes(self) -> str:
+        return self.notes_field.text()
 
     def set_generating(self, is_generating: bool) -> None:
         """
@@ -128,6 +139,7 @@ class YouTubeMetadataWidget(QWidget):
         self.status_label.setText(f"Generation failed: {message}")
 
     def clear(self) -> None:
+        self.notes_field.clear()
         self.status_label.setText("")
         self.title_field.clear()
         self.description_field.clear()

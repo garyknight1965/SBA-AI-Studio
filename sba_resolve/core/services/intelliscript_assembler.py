@@ -2,8 +2,8 @@
 ============================================================
 SBA AI Studio
 IntelliScript Assembler
-Version : 1.0.0
-Sprint  : ML-034
+Version : 1.1.0
+Sprint  : ML-034 / ML-052 (paragraph structure for chapters)
 ============================================================
 
 Builds the final IntelliScript-ready script from a list of ALL
@@ -30,13 +30,37 @@ Every other character of every kept segment is reproduced
 exactly as transcribed. The AI decides WHICH segments to keep
 and WHERE paragraphs begin - it never supplies replacement text,
 and this assembler has no way to accept any.
+
+ML-052: build_paragraphs() exposes the same grouping this always
+did, but structured per-paragraph (original TranscriptSegment
+objects + assembled text) rather than only a flat joined string.
+This is what IntelliScriptChapterGenerator uses to compute real
+edited-video timestamps (from each paragraph's segments' actual
+durations) and topic labels (from each paragraph's text) -
+without duplicating the connector/comma-fix logic here.
+assemble()'s own behavior and output are UNCHANGED - it's now a
+thin wrapper over build_paragraphs().
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sba_resolve.core.models.transcript_segment import TranscriptSegment
 
 _LEADING_CONNECTORS = ("And ", "But ", "So ", "Then ")
+
+
+@dataclass(slots=True)
+class AssembledParagraph:
+    """
+    One paragraph's original kept segments plus its assembled
+    text (connector/comma fixes already applied, same as what
+    assemble() would have produced for this paragraph alone).
+    """
+
+    segments: list[TranscriptSegment]
+    text: str
 
 
 class IntelliScriptAssembler:
@@ -51,6 +75,23 @@ class IntelliScriptAssembler:
         decisions: dict[int, dict],
     ) -> str:
 
+        paragraphs = self.build_paragraphs(all_segments, decisions)
+
+        return (
+            "\n\n".join(paragraph.text for paragraph in paragraphs) + "\n"
+        )
+
+    def build_paragraphs(
+        self,
+        all_segments: list[TranscriptSegment],
+        decisions: dict[int, dict],
+    ) -> list[AssembledParagraph]:
+        """
+        Same grouping logic assemble() has always used, but
+        returning structured per-paragraph data (kept segments +
+        assembled text) instead of only a flat string.
+        """
+
         total = len(all_segments)
 
         def is_kept(segment: TranscriptSegment) -> bool:
@@ -58,7 +99,8 @@ class IntelliScriptAssembler:
                 segment.index, {}
             ).get("keep", False)
 
-        paragraphs: list[str] = []
+        paragraphs: list[AssembledParagraph] = []
+        current_segments: list[TranscriptSegment] = []
         current_parts: list[str] = []
 
         for position, segment in enumerate(all_segments):
@@ -94,15 +136,27 @@ class IntelliScriptAssembler:
                 text = self._fix_trailing_comma(text)
 
             if decision.get("paragraph_break_before") and current_parts:
-                paragraphs.append(" ".join(current_parts))
+                paragraphs.append(
+                    AssembledParagraph(
+                        segments=current_segments,
+                        text=" ".join(current_parts),
+                    )
+                )
+                current_segments = []
                 current_parts = []
 
+            current_segments.append(segment)
             current_parts.append(text)
 
         if current_parts:
-            paragraphs.append(" ".join(current_parts))
+            paragraphs.append(
+                AssembledParagraph(
+                    segments=current_segments,
+                    text=" ".join(current_parts),
+                )
+            )
 
-        return "\n\n".join(paragraphs) + "\n"
+        return paragraphs
 
     # -----------------------------------------------------
 

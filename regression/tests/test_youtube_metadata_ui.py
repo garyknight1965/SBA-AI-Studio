@@ -56,6 +56,19 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
 
         widget = YouTubeMetadataWidget()
 
+        if widget.additional_notes() != "":
+            raise RuntimeError(
+                "additional_notes() should start empty."
+            )
+
+        widget.notes_field.setText("stopped at Stirling Castle")
+
+        if widget.additional_notes() != "stopped at Stirling Castle":
+            raise RuntimeError(
+                f"Expected additional_notes() to return the typed "
+                f"text, got {widget.additional_notes()!r}."
+            )
+
         widget.set_generating(True)
 
         if widget.generate_button.isEnabled():
@@ -130,7 +143,11 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
 
         widget.clear()
 
-        if widget.title_field.text() != "" or widget.status_label.text() != "":
+        if (
+            widget.title_field.text() != ""
+            or widget.status_label.text() != ""
+            or widget.additional_notes() != ""
+        ):
             raise RuntimeError("clear() did not reset all fields.")
 
         # --------------------------------------------------
@@ -177,7 +194,9 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
             def __init__(self, *a, **k):
                 pass
 
-            def generate(self, summary, project_name):
+            def generate(
+                self, summary, project_name, extra_notes="", chapter_days=None
+            ):
                 return {
                     "title": "Test Title",
                     "description": "Test description.",
@@ -241,7 +260,9 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
                 def __init__(self, *a, **k):
                     pass
 
-                def generate(self, summary, project_name):
+                def generate(
+                    self, summary, project_name, extra_notes="", chapter_days=None
+                ):
                     raise OllamaError("Could not reach Ollama at test.")
 
             worker_module.YouTubeMetadataGenerator = FakeGeneratorFailure
