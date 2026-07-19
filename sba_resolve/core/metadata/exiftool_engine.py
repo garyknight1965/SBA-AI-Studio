@@ -1,17 +1,21 @@
 """
-ExifTool Engine v4.2
+ExifTool Engine v4.3
 Auto-detect bundled ExifTool.
 
-v4.2 (2026-07-19, PACKAGING): fixed a real bug for the
-PyInstaller-frozen build - the old project_root lookup
-(Path(__file__).resolve().parents[3]) resolves inside a
-temporary extraction folder once bundled into an .exe, not the
-real install location, so the bundled ExifTool would never be
-found once packaged. When frozen (sys.frozen is True), the
-bundled path now resolves relative to the directory containing
-the actual .exe instead. Running from source is unaffected -
-same parents[3]-based path as before. Priority order (explicit
-path -> bundled -> system PATH) is unchanged.
+v4.2 (2026-07-19, PACKAGING) attempted a sys.frozen-aware fix
+using sys.executable's folder - WRONG for a PyInstaller onefile
+build: bundled data files extract to a temporary folder
+(sys._MEIPASS) fresh on every launch, not next to the real .exe
+(that location is reserved for settings.json, which must persist
+across runs and stay user-editable - a completely different
+requirement from a bundled binary like ExifTool, which doesn't
+need to persist).
+
+v4.3 (2026-07-19) fixes this properly: when frozen, resolves the
+bundled ExifTool relative to sys._MEIPASS (the real onefile
+extraction location) instead. Running from source is unaffected.
+Priority order (explicit path -> bundled -> system PATH) is
+unchanged.
 """
 
 from __future__ import annotations
@@ -26,19 +30,28 @@ from pathlib import Path
 def _bundled_exiftool_path() -> Path:
     """
     Resolves the bundled tools/exiftool/exiftool.exe location.
-    When running as a PyInstaller-frozen .exe, this is next to
-    the real executable. When running from source, this is the
-    project root's tools/exiftool/ folder, exactly as before
-    (three levels up from this file's real location:
-    sba_resolve/core/metadata/).
+
+    When running as a PyInstaller ONEFILE build, bundled data
+    files are extracted fresh to a temporary folder on every
+    launch, exposed via sys._MEIPASS - this is the correct
+    location to look for a bundled binary, NOT next to the real
+    .exe (sys.executable), which stays constant across runs and
+    is reserved for things that must persist (settings.json).
+
+    When running from source, this is the project root's
+    tools/exiftool/ folder, exactly as before (three levels up
+    from this file's real location: sba_resolve/core/metadata/).
     """
 
     if getattr(sys, "frozen", False):
-        project_root = Path(sys.executable).resolve().parent
-    else:
-        project_root = Path(__file__).resolve().parents[3]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass) / "tools" / "exiftool" / "exiftool.exe"
 
-    return project_root / "tools" / "exiftool" / "exiftool.exe"
+    return (
+        Path(__file__).resolve().parents[3]
+        / "tools" / "exiftool" / "exiftool.exe"
+    )
 
 
 class ExifToolEngine:
