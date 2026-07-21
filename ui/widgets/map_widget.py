@@ -3,7 +3,7 @@
 SBA AI Studio
 Map Panel
 GUI-012
-Version : 1.3.0
+Version : 1.4.0
 ============================================================
 
 Shows scanned media on a real interactive map (Leaflet.js +
@@ -29,6 +29,19 @@ in chronological order - straight lines, not road-following, but
 simple and predictable. MediaFile.gps_track (the full trackpoint
 list added for the earlier approach) is left in the model
 unused, in case a road-following route is wanted again later.
+
+Version 1.4.0 (2026-07-21): that road-following route is now
+available, via OpenRouteService (see
+sba_resolve/core/services/route_service.py and
+ui/workers/route_worker.py) - main_window.py fetches it on a
+background thread (real network call) after set_media() and calls
+set_route() with the result. This is entirely optional and
+additive: set_media()'s straight pin-to-pin line is drawn
+immediately as before and stays as the fallback if no
+OpenRouteService API key is configured, or if the fetch fails for
+any reason (main_window.py reports the specific reason via the
+status bar; this widget itself doesn't need to know why a route
+never arrived).
 """
 
 from __future__ import annotations
@@ -62,6 +75,7 @@ _MAP_HTML = """
     }).addTo(map);
 
     var currentLayers = [];
+    var currentRouteLayer = null;
 
     function updateMapData(pins) {
 
@@ -69,6 +83,11 @@ _MAP_HTML = """
             map.removeLayer(layer);
         });
         currentLayers = [];
+
+        if (currentRouteLayer !== null) {
+            map.removeLayer(currentRouteLayer);
+            currentRouteLayer = null;
+        }
 
         var bounds = [];
         var routePoints = [];
@@ -83,16 +102,37 @@ _MAP_HTML = """
         });
 
         if (routePoints.length > 1) {
-            var routeLine = L.polyline(routePoints, {
+            currentRouteLayer = L.polyline(routePoints, {
                 color: '#4f8cff',
                 weight: 4,
                 opacity: 0.8
             }).addTo(map);
-            currentLayers.push(routeLine);
         }
 
         if (bounds.length > 0) {
             map.fitBounds(bounds, { padding: [30, 30] });
+        }
+    }
+
+    function updateRoute(routePoints) {
+        // Replaces ONLY the straight-line route drawn by
+        // updateMapData() with a real, road-following route (see
+        // MapWidget.set_route()) - pins/bounds are untouched, since
+        // this is called later, after an async route fetch
+        // completes, once updateMapData() has already drawn
+        // whatever pins currently exist.
+
+        if (currentRouteLayer !== null) {
+            map.removeLayer(currentRouteLayer);
+            currentRouteLayer = null;
+        }
+
+        if (routePoints.length > 1) {
+            currentRouteLayer = L.polyline(routePoints, {
+                color: '#4f8cff',
+                weight: 4,
+                opacity: 0.8
+            }).addTo(map);
         }
     }
 </script>
@@ -114,6 +154,7 @@ class MapWidget(QWebEngineView):
         super().__init__(parent)
         self._loaded = False
         self._pending_media = None
+        self._pending_route = None
 
         self.loadFinished.connect(self._on_load_finished)
         self.setHtml(_MAP_HTML)
@@ -123,6 +164,9 @@ class MapWidget(QWebEngineView):
         if ok and self._pending_media is not None:
             self._push_update(self._pending_media)
             self._pending_media = None
+        if ok and self._pending_route is not None:
+            self._push_route(self._pending_route)
+            self._pending_route = None
 
     def set_media(self, media_list) -> None:
         """
@@ -172,3 +216,29 @@ class MapWidget(QWebEngineView):
 
     def clear(self) -> None:
         self.set_media([])
+
+    def set_route(self, route_points: list[tuple[float, float]]) -> None:
+        """
+        Replaces the straight pin-to-pin line (drawn by set_media())
+        with a real, road-following route - called by main_window.py
+        once an async OpenRouteService fetch succeeds (see
+        route_service.py / route_worker.py). Safe to call before the
+        page has finished loading (queues like set_media() does) or
+        with an empty/short list (clears back to no route line;
+        JS-side updateRoute() already no-ops for <2 points).
+
+        Does NOT touch pins or map bounds - only the route line
+        layer.
+        """
+
+        if not self._loaded:
+            self._pending_route = list(route_points)
+            return
+
+        self._push_route(route_points)
+
+    def _push_route(self, route_points: list[tuple[float, float]]) -> None:
+        points_json = json.dumps(
+            [[lat, lon] for lat, lon in route_points]
+        )
+        self.page().runJavaScript(f"updateRoute({points_json});")
