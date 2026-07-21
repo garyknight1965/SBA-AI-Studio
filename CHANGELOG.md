@@ -1,7 +1,18 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+## 2026-07-21
 
+### Added
+- **Groq AI provider** as an alternative to Ollama — cloud-based, no local hardware needed, noticeably faster. Configurable in Settings → AI Provider.
+- **Editable IntelliScript prompt guidance** — the editorial instructions the AI uses for keep/cut decisions are now user-editable in Settings → IntelliScript Prompt, with a Reset to Default option.
+- **Real road-following map routing** via OpenRouteService — replaces the straight pin-to-pin line with an actual road route when an API key is configured in Settings → Map. Falls back to the original straight-line behavior if no key is set or the route can't be fetched.
+- Console output from Resolve import is now visible in the GUI via a "Show Details..." expander on the Import to Resolve dialog, instead of console-only.
+
+### Fixed
+- Ollama request timeout raised from 120s to 300s to accommodate longer transcript prompts.
+- Media Browser columns no longer get squeezed unreadably when the dock is narrow — the Filename column now absorbs available space instead of the shorter columns.
+- Settings dialog is now scrollable, so it no longer grows taller than the screen as more sections are added.
 ## [Unreleased]
 
 ### Added
