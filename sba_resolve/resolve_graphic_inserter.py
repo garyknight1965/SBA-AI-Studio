@@ -5,11 +5,12 @@ Shared insertion primitive for all AI-driven graphics features:
     - ML-044 Title Cards
     - ML-045 Channel Bug Overlay
     - ML-046 Lower-Third Labels
+    - ML-055 Chapter Title Cards
 
 This module owns every direct call into the DaVinciResolveScript API for
-graphics work. ML-044/045/046 each build their own suggestion/approval logic
-on top of this, but none of them talk to Resolve directly -- they all go
-through GraphicInserter so there is exactly one place that knows how to
+graphics work. ML-044/045/046/055 each build their own suggestion/approval
+logic on top of this, but none of them talk to Resolve directly -- they all
+go through GraphicInserter so there is exactly one place that knows how to
 add a track, clone a Fusion Title template, set its text, and place it on
 the timeline.
 
@@ -33,8 +34,7 @@ RESOLVE_SCRIPT_API / RESOLVE_SCRIPT_LIB must be set as per Blackmagic's
 standard scripting setup. See:
 https://documents.blackmagicdesign.com/UserManuals/DaVinciResolveScriptingGuide.pdf
 
-Two distinct insertion paths, because Gary has real image/video files but
-no saved Fusion Title template in Resolve:
+Three distinct insertion paths:
 
     - MEDIA ASSET (channel bug logo, intro clip): an image or video file
       on disk. CONFIRMED via testing: Power Bins are NOT reachable
@@ -52,28 +52,43 @@ no saved Fusion Title template in Resolve:
       duplicate-timeline safety net per the rollback standard, not
       simple tag-and-delete.
 
-    - NATIVE TEXT (title cards, lower-thirds): no template exists to
-      clone, so these are built from Resolve's built-in Text+ generator
-      and styled in code (font, color, background box) to match the
-      channel branding, per-request text set directly on the generator.
+    - NATIVE TEXT (title cards, lower-thirds, built live): no template
+      exists to clone, so these are built from Resolve's built-in Text+
+      generator and styled in code (font, color, background box) to
+      match the channel branding, per-request text set directly on the
+      generator. Requires the manual prepare_text_track() + click +
+      insert() two-step process -- see _insert_native_text.
 
-CAVEAT (flagged deliberately, not glossed over): Resolve's scripting API
-has real limitations around targeting an arbitrary, specific track when
-inserting a generator via InsertGeneratorIntoTimeline() -- in some Resolve
-versions this inserts relative to the currently active/selected track in
-the UI, not a track index chosen purely by script. This module sets the
-current timecode via SetCurrentTimecode() before inserting, which
-controls *when*, but track targeting for generators should be verified
-against Gary's actual Resolve version during testing (see
-tools/test_graphic_inserter.py) -- flagged here rather than assumed to
-work silently.
+    - TEMPLATED TEXT (ML-055 chapter title cards): a saved Fusion .comp
+      template, built once by hand in Resolve's Fusion editor and
+      exported via ExportFusionComp(). Placed via ImportFusionComp()
+      onto an item anchored with AppendToTimeline -- CONFIRMED via
+      testing (tools/test_graphic_inserter.py, Candidate B, 2026-07-20
+      on Gary's real Resolve setup) that this is genuinely non-rippling
+      and needs NO manual track click, unlike the native text path
+      above. This is the preferred mechanism for any future dynamic-text
+      feature that can tolerate a pre-built template rather than
+      building the Text+ node graph live.
+
+CAVEAT (flagged deliberately, not glossed over -- applies to the NATIVE
+TEXT path only, NOT the TEMPLATED TEXT path): Resolve's scripting API has
+real limitations around targeting an arbitrary, specific track when
+inserting a generator via InsertGeneratorIntoTimeline() /
+InsertFusionCompositionIntoTimeline() -- confirmed via testing that these
+insert relative to the currently active/selected track in the UI, not a
+track index chosen purely by script, with no scriptable override
+(confirmed again independently via the samuelgursky/davinci-resolve-mcp
+project's source, which wraps these same calls with no workaround either).
+This is why the TEMPLATED TEXT path (AppendToTimeline + ImportFusionComp)
+was built for ML-055 -- it sidesteps this limitation structurally instead
+of working around it.
 """
 
 from dataclasses import dataclass
 from typing import Optional
 import os
 
-from graphics_config import GraphicsSettings, DEFAULT_SETTINGS
+from sba_resolve.graphics_config import GraphicsSettings, DEFAULT_SETTINGS
 
 
 class ResolveConnectionError(RuntimeError):
@@ -93,18 +108,22 @@ class GraphicPlacementError(RuntimeError):
 class GraphicRequest:
     """One approved graphic to insert.
 
-    Exactly one of (image_path and/or media_pool_name) or text should be
-    set:
+    Exactly one of (image_path and/or media_pool_name), text (native,
+    built live), or text+template_path (templated, ML-055) should be set:
         - media_pool_name / image_path: an asset that already exists in
           Resolve (e.g. the logo or "Intro 2026" in Gary's Power Bin) or
           on disk. media_pool_name is checked first; image_path is only
           used as a fallback import if no matching Media Pool item is
           found. Works for images and video clips alike -- both are just
           media pool items to AppendToTimeline.
-        - text: text to display via Resolve's native Text+ generator,
-          styled per graphics_config's TITLE_TEXT_* constants. Used for
-          title cards and lower-thirds, where there's no saved template
-          to clone.
+        - text (with template_path left None): text to display via
+          Resolve's native Text+ generator, styled per graphics_config's
+          TITLE_TEXT_* constants. Used for title cards and lower-thirds,
+          where there's no saved template to clone. Needs the manual
+          prepare_text_track() + click step -- see insert().
+        - text + template_path: ML-055 chapter title cards. text gets
+          written into a saved Fusion .comp template's TextPlus tool.
+          No manual click needed -- see _insert_templated_text.
 
     start_seconds: position on the *current edited timeline*, in seconds
         from timeline start. Callers are responsible for making sure this
@@ -121,6 +140,9 @@ class GraphicRequest:
     scale: relative scale to apply (1.0 = as imported/generated).
     position: named position preset, interpreted by _apply_transform().
     opacity: 0.0-1.0.
+    template_path: path to a saved Fusion .comp file (ML-055). When set,
+        text must also be set, and media_pool_name/image_path must NOT
+        be set -- see _insert_templated_text.
     """
     start_seconds: float
     track_name: str
@@ -133,6 +155,7 @@ class GraphicRequest:
     scale: float = 1.0
     position: str = "default"
     opacity: float = 1.0
+    template_path: Optional[str] = None
 
     def __post_init__(self):
         has_asset = self.media_pool_name is not None or self.image_path is not None
@@ -143,6 +166,16 @@ class GraphicRequest:
                 "image_path) or text set, got media_pool_name="
                 f"{self.media_pool_name!r} image_path={self.image_path!r} "
                 f"text={self.text!r}"
+            )
+        if self.template_path is not None and self.text is None:
+            raise ValueError(
+                "template_path requires text to be set too (the chapter "
+                "label to write into the template)."
+            )
+        if self.template_path is not None and has_asset:
+            raise ValueError(
+                "template_path is for templated text requests -- it "
+                "can't be combined with media_pool_name/image_path."
             )
         if not has_asset and not self.use_full_duration and self.duration_seconds is None:
             raise ValueError(
@@ -242,7 +275,8 @@ class GraphicInserter:
 
         Both the channel bug logo and the intro clip ("Intro 2026") use
         this same disk-fallback path, since Power Bin assets can't be
-        reached directly by script.
+        reached directly by script. ML-055's templated text path also
+        reuses this for its anchor placeholder (the same logo image).
 
         Raises AssetNotFoundError if nothing can be found or imported.
         """
@@ -297,11 +331,12 @@ class GraphicInserter:
         """Returns the 1-based video track index matching track_name,
         creating a new track with that name if none exists.
 
-        Safe ONLY for AppendToTimeline-based inserts (images/video
-        assets like the logo and intro) -- that call is genuine
-        overwrite-style, so multiple items can safely share one track.
-        Do NOT use this for text/Fusion inserts -- see
-        _ensure_unique_track.
+        Safe for AppendToTimeline-based inserts -- both real media
+        assets (images/video like the logo and intro) and ML-055's
+        templated text path, since both go through AppendToTimeline,
+        which is genuine overwrite-style placement. Multiple items can
+        safely share one track under this mechanism. Do NOT use this
+        for the NATIVE text/Fusion path -- see prepare_text_track.
         """
         self._require_connection()
 
@@ -322,8 +357,10 @@ class GraphicInserter:
         return new_index
 
     def prepare_text_track(self, base_track_name: str, label: str) -> str:
-        """STEP 1 OF 2 for any text/Fusion graphic. Creates a brand-new,
-        uniquely-named, empty video track and returns its name.
+        """STEP 1 OF 2 for a NATIVE text/Fusion graphic (NOT needed for
+        ML-055's templated path -- see _insert_templated_text, which
+        uses _ensure_track instead). Creates a brand-new, uniquely-named,
+        empty video track and returns its name.
 
         The caller MUST show this name to the user and have them
         manually click that track in the Resolve UI before calling
@@ -378,15 +415,23 @@ class GraphicInserter:
         Returns the final clip name actually applied (prefix + label),
         so callers can log/display what was created.
 
-        For text/Fusion requests: this does NOT create or target any
-        track. InsertFusionCompositionIntoTimeline() only ever lands on
-        whatever track is currently active/selected in the Resolve UI --
-        there is no scriptable way to change that. Call
-        prepare_text_track() FIRST, click the track it creates in the
-        Resolve UI, THEN call insert() -- calling insert() directly
-        without that manual step will silently place the clip on
-        whatever track was already active (e.g. your real Video 1),
-        exactly as happened in testing.
+        Three dispatch paths:
+            1. request.template_path set (ML-055): the confirmed-safe
+               templated mechanism -- AppendToTimeline anchor +
+               ImportFusionComp. No manual click needed.
+            2. request.media_pool_name / image_path set: a real media
+               asset (logo, intro clip), placed via AppendToTimeline.
+               No manual click needed.
+            3. request.text set alone (no template_path): the NATIVE
+               text/Fusion path. InsertFusionCompositionIntoTimeline()
+               only ever lands on whatever track is currently
+               active/selected in the Resolve UI -- there is no
+               scriptable way to change that. Call prepare_text_track()
+               FIRST, click the track it creates in the Resolve UI,
+               THEN call insert() -- calling insert() directly without
+               that manual step will silently place the clip on
+               whatever track was already active (e.g. your real
+               Video 1), exactly as happened in testing.
 
         Raises AssetNotFoundError / GraphicPlacementError on failure.
         Never partially applies -- if any step fails, nothing is left
@@ -394,8 +439,13 @@ class GraphicInserter:
         """
         self._require_connection()
 
-        is_asset = request.media_pool_name is not None or request.image_path is not None
-        if is_asset:
+        if request.template_path is not None:
+            # ML-055: confirmed-safe templated path (Candidate B,
+            # CONFIRMED 2026-07-20) -- genuinely additive/overwrite via
+            # AppendToTimeline, safe to share one track, no manual click.
+            track_index = self._ensure_track(request.track_name)
+            timeline_item = self._insert_templated_text(request, track_index)
+        elif request.media_pool_name is not None or request.image_path is not None:
             # Safe to share one track -- AppendToTimeline is genuinely
             # additive/overwrite-style, confirmed via testing.
             track_index = self._ensure_track(request.track_name)
@@ -476,6 +526,75 @@ class GraphicInserter:
                 f"at {request.start_seconds}s on track '{request.track_name}'."
             )
         return appended[0]
+
+    def _insert_templated_text(self, request: GraphicRequest, track_index: int):
+        """ML-055. Places request.text using the confirmed-safe
+        templated mechanism (Candidate B, CONFIRMED 2026-07-20 on
+        Gary's real Resolve setup -- see
+        tools/test_chapter_title_bootstrap.py): places the channel bug
+        logo image as an anchor via AppendToTimeline (non-rippling,
+        scriptable track/frame, no manual click needed), then attaches
+        request.template_path (a saved Fusion .comp built once by hand)
+        onto that placed item via ImportFusionComp(), then writes
+        request.text into the template's TextPlus tool.
+
+        Unlike _insert_native_text, this is genuinely safe to share one
+        track across many calls -- there is no ripple-insert involved
+        at all, since the anchor placement goes through AppendToTimeline
+        exactly like a real media asset (logo/intro).
+        """
+        from sba_resolve.graphics_config import (
+            CHANNEL_BUG_MEDIA_POOL_NAME,
+            CHANNEL_BUG_IMAGE_PATH,
+        )
+
+        anchor_item = self._resolve_asset(CHANNEL_BUG_MEDIA_POOL_NAME, CHANNEL_BUG_IMAGE_PATH)
+
+        start_frame = self._seconds_to_frames(request.start_seconds)
+        duration_frames = self._seconds_to_frames(request.duration_seconds)
+
+        clip_info = {
+            "mediaPoolItem": anchor_item,
+            "startFrame": 0,
+            "endFrame": duration_frames,
+            "trackIndex": track_index,
+            "recordFrame": start_frame,
+        }
+        appended = self._media_pool.AppendToTimeline([clip_info])
+        if not appended:
+            raise GraphicPlacementError(
+                f"AppendToTimeline failed placing the anchor for "
+                f"templated text '{request.text}' at "
+                f"{request.start_seconds}s on track '{request.track_name}'."
+            )
+        timeline_item = appended[0]
+
+        comp = timeline_item.ImportFusionComp(request.template_path)
+        if comp is None:
+            raise GraphicPlacementError(
+                f"ImportFusionComp('{request.template_path}') returned "
+                f"nothing -- confirm the template file exists and is a "
+                f"valid exported Fusion composition."
+            )
+
+        text_tool = self._find_tool_by_id(comp, "TextPlus")
+        if text_tool is None:
+            raise GraphicPlacementError(
+                f"Could not find a TextPlus tool in the imported "
+                f"template '{request.template_path}' -- confirm it was "
+                f"built with a Text+ node, not a plain Text generator."
+            )
+        text_tool.SetInput("StyledText", request.text, 0)
+
+        return timeline_item
+
+    def _find_tool_by_id(self, comp, tool_id: str):
+        tools = comp.GetToolList(False)
+        for tool_name in tools:
+            tool = tools[tool_name]
+            if tool.ID == tool_id:
+                return tool
+        return None
 
     def _insert_native_text(self, request: GraphicRequest, track_index: Optional[int] = None):
         """Inserts a blank Fusion composition at the requested timecode,
@@ -568,7 +687,7 @@ class GraphicInserter:
         Found" error), Size, Red1/Green1/Blue1. All SetInput calls need
         a third argument (0) for a static, non-animated value.
         """
-        from graphics_config import (
+        from sba_resolve.graphics_config import (
             TITLE_TEXT_FONT,
             TITLE_TEXT_STYLE,
             TITLE_TEXT_COLOR,
@@ -731,20 +850,22 @@ class GraphicInserter:
     def remove_by_prefix(self, prefix: str) -> int:
         """Deletes every timeline item whose name starts with prefix,
         then deletes any video track that is now completely empty AND
-        whose name contains " - " (the naming pattern _ensure_unique_track
+        whose name contains " - " (the naming pattern prepare_text_track
         always uses: "{base_track_name} - {label}"). This second step
-        cleans up the per-clip dedicated tracks that text/Fusion inserts
-        create, so rollback doesn't leave a growing pile of empty tracks
-        behind every run.
+        cleans up the per-clip dedicated tracks that NATIVE text/Fusion
+        inserts create, so rollback doesn't leave a growing pile of
+        empty tracks behind every run.
 
         The " - " check is deliberately conservative: image/video asset
-        tracks (logo, intro) use a plain shared name with no " - "
-        separator, so this never touches those even if they end up
-        empty too -- only tracks created by _ensure_unique_track match.
+        tracks (logo, intro) AND ML-055's shared chapter title card
+        track use plain names with no " - " separator, so this never
+        touches those even if they end up empty too -- only tracks
+        created by prepare_text_track match.
 
         This is the rollback mechanism for any single feature (e.g. pass
         graphics_config.TRACK_PREFIX_TITLE_CARD to remove only title
-        cards, leaving lower-thirds and the channel bug untouched).
+        cards, or TRACK_PREFIX_CHAPTER_TITLE_CARD to remove only
+        ML-055's chapter cards, leaving everything else untouched).
 
         Returns the number of clips removed (track cleanup is separate
         and not counted).

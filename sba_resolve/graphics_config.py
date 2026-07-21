@@ -2,7 +2,7 @@
 graphics_config.py
 
 Shared configuration for all AI-driven graphics features (ML-044 Title Cards,
-ML-045 Channel Bug, ML-046 Lower-Thirds).
+ML-045 Channel Bug, ML-046 Lower-Thirds, ML-055 Chapter Title Cards).
 
 Centralising this here means every feature reads/writes the same settings
 object instead of hardcoding durations, template names, or track-naming
@@ -12,6 +12,13 @@ duration) in the GUI settings panel, every feature picks it up from one place.
 NOTE: Update TEMPLATE_BIN_PATH and the *_TEMPLATE_NAME values below to match
 the exact names/locations of Gary's saved Fusion Title templates in his
 Media Pool before this is used for real. Placeholder values are marked TODO.
+
+ML-055 NOTE: CHAPTER_TITLE_CARD_TEMPLATE_PATH must point to a real,
+already-exported .comp file before insert_chapter_title_cards() will run --
+build and style it once by hand in Resolve's Fusion editor, then export via
+TimelineItem.ExportFusionComp() to this exact path. See
+tools/test_chapter_title_bootstrap.py for the confirmed export/attach
+mechanism (Candidate B, CONFIRMED 2026-07-20).
 """
 
 from dataclasses import dataclass, field
@@ -30,6 +37,7 @@ TRACK_PREFIX_TITLE_CARD = "AI_TitleCard_"
 TRACK_PREFIX_LOWER_THIRD = "AI_LowerThird_"
 TRACK_PREFIX_CHANNEL_BUG = "AI_ChannelBug"
 TRACK_PREFIX_INTRO = "AI_Intro"
+TRACK_PREFIX_CHAPTER_TITLE_CARD = "AI_ChapterCard_"
 
 # Dedicated video track names (created if they don't already exist).
 # Each feature gets its own track so rollback of one feature never touches
@@ -38,6 +46,7 @@ TRACK_NAME_TITLE_CARDS = "AI Title Cards"
 TRACK_NAME_LOWER_THIRDS = "AI Lower Thirds"
 TRACK_NAME_CHANNEL_BUG = "AI Channel Bug"
 TRACK_NAME_INTRO = "AI Intro"
+TRACK_NAME_CHAPTER_TITLE_CARDS = "AI Chapter Title Cards"
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +61,11 @@ TRACK_NAME_INTRO = "AI Intro"
 # falling back to importing from disk (see GraphicInserter._get_or_import_image).
 # CHANNEL_BUG_IMAGE_PATH stays as a fallback only, in case the Power Bin
 # clip is ever missing/renamed and a fresh import is needed.
+#
+# ML-055 also reuses this same confirmed-findable image as the anchor
+# placeholder for chapter title cards (see
+# GraphicInserter._insert_templated_text) -- no reason to invent a second
+# test asset when this one already works reliably.
 CHANNEL_BUG_IMAGE_PATH = r"D:\Download\logo\logo.png"
 CHANNEL_BUG_MEDIA_POOL_NAME = "logo.png"
 
@@ -77,6 +91,22 @@ TITLE_BACKGROUND_COLOR = (0.04, 0.09, 0.22, 0.85)  # navy, semi-opaque
 
 
 # ---------------------------------------------------------------------------
+# ML-055 Chapter Title Cards: a saved Fusion .comp template, built once by
+# hand in Resolve's Fusion editor (same white-Impact-text look as
+# TITLE_TEXT_* above) and exported via ExportFusionComp(). Placed via
+# ImportFusionComp() onto an AppendToTimeline-anchored item -- confirmed
+# non-rippling, zero manual clicks per chapter (see
+# tools/test_chapter_title_bootstrap.py, Candidate B).
+#
+# TODO: update this path once Gary has built and exported the real,
+# final-styled template -- the bootstrap test's plain placeholder text
+# ("ML-055 Bootstrap") should NOT be used as the production template as-is.
+# ---------------------------------------------------------------------------
+
+CHAPTER_TITLE_CARD_TEMPLATE_PATH = r"D:\Projects\SBA-AI-Studio\assets\ai_chapter_title_card.comp"
+
+
+# ---------------------------------------------------------------------------
 # Default timing settings (all configurable via the GUI settings panel;
 # these are just the fallback defaults, not hardcoded behaviour)
 # ---------------------------------------------------------------------------
@@ -97,6 +127,9 @@ class GraphicsSettings:
     channel_bug_position: str = "bottom_right"
     channel_bug_full_duration: bool = True   # False = intro/outro only
 
+    # ML-055 Chapter Title Cards
+    chapter_title_card_duration_seconds: float = 4.0
+
     # Shared
     fade_in_out_seconds: float = 0.3
 
@@ -110,6 +143,7 @@ class GraphicsSettings:
             "channel_bug_scale": self.channel_bug_scale,
             "channel_bug_position": self.channel_bug_position,
             "channel_bug_full_duration": self.channel_bug_full_duration,
+            "chapter_title_card_duration_seconds": self.chapter_title_card_duration_seconds,
             "fade_in_out_seconds": self.fade_in_out_seconds,
         }
 
