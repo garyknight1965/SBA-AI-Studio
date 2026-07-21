@@ -110,3 +110,7 @@ dist/
 build/
 dist/
 build/
+
+config/settings.json
+
+config/settings.json
