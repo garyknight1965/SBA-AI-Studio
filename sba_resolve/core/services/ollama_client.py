@@ -3,7 +3,7 @@
 SBA AI Studio
 Ollama Client
 ML-026-002
-Version : 1.0.0 Alpha
+Version : 1.1.0
 ============================================================
 
 Minimal client for a local Ollama instance's HTTP API
@@ -12,6 +12,12 @@ library (urllib) - no extra pip dependency required.
 
 Per the project's "AI Roadmap" - local AI (Ollama) by default,
 cloud AI optional and not built here yet.
+
+v1.1.0 (2026-07-20): default timeout_seconds raised 120.0 -> 300.0.
+Gary hit repeated IntelliScript timeouts even on GPU-accelerated
+Ollama - a full transcript prompt is longer than YouTube metadata's,
+and 120s wasn't consistently enough. Gary chose a simple raised
+default over a configurable Settings option.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ class OllamaClient:
         self,
         model: str = "llama3.2",
         host: str = "http://localhost:11434",
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 300.0,
     ) -> None:
         self.model = model
         self.host = host.rstrip("/")

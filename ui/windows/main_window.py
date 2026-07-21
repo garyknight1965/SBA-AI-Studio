@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -16,16 +19,35 @@ from controllers.workspace_controller import WorkspaceController
 from sba_resolve.core.models.workspace import Workspace
 from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
-    load_ollama_model,
+    load_openrouteservice_api_key,
     load_theme,
 )
 from sba_resolve.core.services.day_detector import DayDetector
+from sba_resolve.core.services.chapter_title_card_inserter import (
+    NoChaptersFoundError,
+    NoTemplateError,
+    insert_chapter_title_cards,
+)
+from sba_resolve.core.services.cut_list_exporter import (
+    DEFAULT_HANDLE_SECONDS,
+    build_cut_list,
+    format_cut_list,
+)
+from sba_resolve.core.services.resolve_transcript_parser import (
+    ResolveTranscriptParser,
+)
+from sba_resolve.resolve_graphic_inserter import (
+    AssetNotFoundError,
+    GraphicPlacementError,
+    ResolveConnectionError,
+)
 from ui.layout.dock_manager import DockManager
 from ui.theme import apply_theme
 from ui.widgets.map_widget import MapWidget
 from ui.windows.settings_dialog import SettingsDialog
 from ui.workers.intelliscript_worker import IntelliScriptWorker
 from ui.workers.location_grouping_worker import LocationGroupingWorker
+from ui.workers.route_worker import RouteWorker
 from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
 from sba_resolve.connector import ResolveConnector
 
@@ -57,6 +79,13 @@ class MainWindow(QMainWindow):
     actions - he wasn't sure about the combined flow.
     scan_and_import_project() still exists below (unused by the
     menu now) in case it's ever wanted again.
+
+    Groq provider backlog item: both YouTubeMetadataWorker and
+    IntelliScriptWorker no longer take a "model" argument - they
+    (and the generators they call) now default to get_ai_provider(),
+    which reads the AI Provider choice (Ollama or Groq) straight
+    from Settings itself. load_ollama_model() is no longer imported
+    here since nothing in this file needs it anymore.
     """
 
     def __init__(self):
@@ -107,6 +136,7 @@ class MainWindow(QMainWindow):
         self._youtube_worker = None
         self._intelliscript_worker = None
         self._location_worker = None
+        self._route_worker = None
 
         # Set by load_transcript() once a file is chosen - the raw
         # text sent to IntelliScriptWorker on Generate.
@@ -137,6 +167,16 @@ class MainWindow(QMainWindow):
         file_menu.addAction(
             "Generate YouTube Metadata", self.generate_youtube_metadata
         )
+        # ML-055: chapter title cards, built from whatever chapter
+        # lines are currently in the YouTube Metadata description
+        # field -- deliberately separate from "Generate YouTube
+        # Metadata" above, since Gary may edit that text by hand
+        # before placing the cards, and this should only ever act on
+        # exactly what's on screen, never regenerate it.
+        file_menu.addAction(
+            "Add Chapter Title Cards to Timeline",
+            self.add_chapter_title_cards,
+        )
         file_menu.addSeparator()
         # ML-053: combined per Gary's UI simplification request -
         # was two separate menu items (Load Transcript..., then
@@ -149,6 +189,17 @@ class MainWindow(QMainWindow):
         )
         file_menu.addAction(
             "Save IntelliScript Script...", self.save_intelliscript_script
+        )
+        # Fix for Gary's real complaint (2026-07-20): manually cutting
+        # using IntelliScript's exact segment timecodes was clipping
+        # word start/ends, since those timecodes are Resolve's own
+        # transcript-export boundaries with zero padding. This exports
+        # a handle-adjusted (+/- 0.4s) cut list instead, as a separate
+        # plain-text reference - deliberately not the same action as
+        # Save IntelliScript Script, since that's the read-aloud script
+        # text and this is cutting timecodes.
+        file_menu.addAction(
+            "Export Cut List...", self.export_cut_list
         )
         file_menu.addSeparator()
         file_menu.addAction("Group by Location", self.generate_locations)
@@ -231,6 +282,12 @@ class MainWindow(QMainWindow):
             # media's GPS pins/route.
             self.map_widget.set_media(self.workspace.media)
 
+            # Real road-following route (2026-07-21): the straight
+            # pin-to-pin line above is drawn immediately and stays
+            # as the fallback; this replaces it with a real route
+            # once/if the background fetch succeeds.
+            self._maybe_fetch_route()
+
             self.statusBar().showMessage(
                 f"Scan complete: {count} files"
             )
@@ -255,6 +312,68 @@ class MainWindow(QMainWindow):
 
         self.import_to_resolve()
 
+    def _maybe_fetch_route(self) -> None:
+        """
+        Real road-following route (2026-07-21). Only attempts a
+        fetch if an OpenRouteService API key is actually configured
+        - with none set, this does nothing at all (no wasted network
+        call, no spurious failure message), and the map's straight
+        pin-to-pin line (already drawn by set_media()) stays as-is.
+
+        Needs at least 2 GPS-located clips to form a route - same
+        extraction/sort logic as MapWidget._push_update(), kept
+        separate here since MapWidget's own responsibility is
+        drawing, not deciding whether/what to fetch.
+        """
+
+        api_key = load_openrouteservice_api_key()
+        if not api_key:
+            return
+
+        media_list = sorted(
+            getattr(self.workspace, "media", []) or [],
+            key=lambda m: getattr(m, "created", None) or datetime.min,
+        )
+
+        waypoints = [
+            (m.gps_latitude, m.gps_longitude)
+            for m in media_list
+            if getattr(m, "gps_latitude", None) is not None
+            and getattr(m, "gps_longitude", None) is not None
+        ]
+
+        if len(waypoints) < 2:
+            return
+
+        if self._route_worker is not None and (
+            self._route_worker.isRunning()
+        ):
+            return
+
+        self.statusBar().showMessage(
+            "Fetching road-following route..."
+        )
+
+        self._route_worker = RouteWorker(
+            waypoints=waypoints, api_key=api_key
+        )
+        self._route_worker.succeeded.connect(self._on_route_succeeded)
+        self._route_worker.failed.connect(self._on_route_failed)
+        self._route_worker.start()
+
+    def _on_route_succeeded(self, route_points: list) -> None:
+        self.map_widget.set_route(route_points)
+        self.statusBar().showMessage("Road-following route loaded.")
+
+    def _on_route_failed(self, message: str) -> None:
+        # Deliberately NOT a popup - the straight-line fallback is
+        # already showing correctly, this is a "nice to have didn't
+        # work" case, not an error blocking anything the person
+        # asked to do.
+        self.statusBar().showMessage(
+            f"Road-following route unavailable: {message}"
+        )
+
     @staticmethod
     def _split_media_by_corruption(media_list):
         """
@@ -277,6 +396,29 @@ class MainWindow(QMainWindow):
         return clean, corrupted
 
     def import_to_resolve(self):
+        """
+        GUI polish fix (2026-07-21): ResolveConnector.run() (and
+        everything it calls - create_project, MediaPoolManager,
+        create_timeline) prints a large amount of genuinely useful
+        status detail to the console only - project/bin/media
+        counts, ride day + placement statistics, dropped/skipped
+        clip names and reasons, the "Manual Sync Required" per-
+        camera report (ML-054), marker placement counts, and any
+        warnings/errors. Running from source this was visible in a
+        terminal; running the packaged .exe (no attached console
+        window) it was invisible entirely.
+
+        Fix: redirect stdout to a buffer for the whole try block
+        (starting before connector.run(), so a mid-run exception
+        still has whatever was printed up to that point available),
+        then attach the full captured text via QMessageBox's native
+        setDetailedText() "Show Details..." expander on every path -
+        success, partial (corrupted files skipped), and failure.
+        Nothing about the actual import logic changes; this is
+        purely making already-existing status text visible in the
+        GUI instead of only a terminal.
+        """
+        console_output = io.StringIO()
         try:
             if not getattr(self.workspace, "media", None):
                 QMessageBox.information(
@@ -359,7 +501,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Importing into Resolve...")
 
             connector = ResolveConnector(project_data)
-            connector.run()
+            with contextlib.redirect_stdout(console_output):
+                connector.run()
 
             if corrupted_media:
                 skipped_lines = "\n".join(
@@ -372,38 +515,45 @@ class MainWindow(QMainWindow):
                     f"{len(corrupted_media)} corrupted file(s)."
                 )
 
-                QMessageBox.information(
-                    self,
-                    "Imported (with skipped files)",
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Information)
+                msg_box.setWindowTitle("Imported (with skipped files)")
+                msg_box.setText(
                     "Project imported into DaVinci Resolve.\n\n"
                     f"{len(corrupted_media)} corrupted file(s) were "
                     "skipped and never sent to Resolve:\n"
-                    f"{skipped_lines}",
+                    f"{skipped_lines}"
                 )
+                msg_box.setDetailedText(console_output.getvalue())
+                msg_box.exec()
             else:
                 self.statusBar().showMessage("Resolve import complete.")
 
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    "Project imported into DaVinci Resolve.",
-                )
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Information)
+                msg_box.setWindowTitle("Success")
+                msg_box.setText("Project imported into DaVinci Resolve.")
+                msg_box.setDetailedText(console_output.getvalue())
+                msg_box.exec()
 
         except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Resolve Import Error",
-                str(exc),
-            )
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("Resolve Import Error")
+            msg_box.setText(str(exc))
+            captured = console_output.getvalue()
+            if captured:
+                msg_box.setDetailedText(captured)
+            msg_box.exec()
 
     def generate_youtube_metadata(self):
         """
         Runs YouTube metadata generation on a background thread
-        (Planning Engine -> ride summary -> local Ollama model),
-        so a slow model load or an unreachable Ollama instance
-        doesn't freeze the GUI. This never touches Resolve at
-        all - it works even with timeline creation disabled or
-        Resolve not connected.
+        (Planning Engine -> ride summary -> configured AI provider),
+        so a slow model load or an unreachable backend doesn't
+        freeze the GUI. This never touches Resolve at all - it
+        works even with timeline creation disabled or Resolve not
+        connected.
 
         ML-052: also passes through the currently loaded transcript
         text and IntelliScript decisions (if both are available for
@@ -452,7 +602,6 @@ class MainWindow(QMainWindow):
         self._youtube_worker = YouTubeMetadataWorker(
             media_list=list(self.workspace.media),
             project_name=self.workspace.project_name,
-            model=load_ollama_model(),
             extra_notes=self.docks.youtube_panel.additional_notes(),
             raw_transcript_text=self._loaded_transcript_text,
             intelliscript_decisions=intelliscript_decisions,
@@ -482,6 +631,148 @@ class MainWindow(QMainWindow):
         self.docks.youtube_panel.set_error(message)
         self.statusBar().showMessage("YouTube metadata generation failed.")
         QMessageBox.critical(self, "YouTube Metadata Error", message)
+
+    def add_chapter_title_cards(self):
+        """
+        ML-055. Reads whatever is currently in the YouTube Metadata
+        description field (NOT a fresh generation - exactly what's on
+        screen, including any hand-edits Gary has made) and places one
+        Fusion text title card per chapter onto the shared "AI Chapter
+        Title Cards" track, via the confirmed-safe AppendToTimeline +
+        ImportFusionComp mechanism (see resolve_graphic_inserter.py,
+        GraphicInserter._insert_templated_text -- Candidate B,
+        CONFIRMED 2026-07-20 on Gary's real Resolve setup).
+
+        Deliberately separate from generate_youtube_metadata() above -
+        this never regenerates the description, it only reads whatever
+        text is already sitting in the panel right now.
+
+        Runs synchronously (no worker thread) since this is a direct,
+        short Resolve scripting call, not a slow model call - matching
+        import_to_resolve()'s pattern, not generate_youtube_metadata()'s.
+
+        Every failure path shows a clear message box rather than
+        failing silently, per Gary's rules - a partially-placed batch
+        (if a later chapter fails) is safe (additive-only, per
+        resolve_graphic_inserter.py's design constraints) but should
+        never be silent.
+        """
+
+        description_text = self.docks.youtube_panel.description_field.toPlainText()
+
+        try:
+            placed_names = insert_chapter_title_cards(description_text)
+        except NoTemplateError as exc:
+            QMessageBox.warning(self, "No Template Found", str(exc))
+            return
+        except NoChaptersFoundError as exc:
+            QMessageBox.information(self, "No Chapters Found", str(exc))
+            return
+        except (ResolveConnectionError, AssetNotFoundError, GraphicPlacementError) as exc:
+            QMessageBox.critical(self, "Chapter Title Cards Error", str(exc))
+            return
+
+        self.statusBar().showMessage(
+            f"Placed {len(placed_names)} chapter title card(s) on "
+            f"'AI Chapter Title Cards'."
+        )
+        QMessageBox.information(
+            self,
+            "Chapter Title Cards Placed",
+            f"Placed {len(placed_names)} chapter title card(s):\n\n"
+            + "\n".join(f"  - {name}" for name in placed_names),
+        )
+
+    def export_cut_list(self):
+        """
+        Fix for Gary's real complaint (2026-07-20): manually cutting
+        using IntelliScript's exact segment timecodes was clipping
+        word start/ends, since those timecodes are Resolve's own
+        transcript-export boundaries, passed through completely
+        unmodified with zero built-in handle/padding. See
+        sba_resolve/core/services/cut_list_exporter.py.
+
+        Re-parses the currently loaded transcript text (cheap,
+        deterministic) rather than requiring IntelliScriptWorker's
+        result shape to change - all_segments isn't otherwise kept on
+        self. Requires a real fps from scanned media, since Resolve's
+        HH:MM:SS:FF timecodes need a frame rate to convert to/from
+        seconds accurately - refuses rather than guessing a default
+        fps if none is available.
+        """
+
+        if not self._intelliscript_result or self._intelliscript_result.get(
+            "parse_error"
+        ):
+            QMessageBox.information(
+                self,
+                "Nothing to export",
+                "Generate an IntelliScript before exporting a cut list.",
+            )
+            return
+
+        if not self._loaded_transcript_text:
+            QMessageBox.information(
+                self,
+                "Nothing to export",
+                "No transcript is currently loaded.",
+            )
+            return
+
+        fps = next(
+            (
+                m.fps
+                for m in getattr(self.workspace, "media", [])
+                if getattr(m, "fps", 0.0)
+            ),
+            0.0,
+        )
+        if not fps:
+            QMessageBox.warning(
+                self,
+                "No Frame Rate Found",
+                "Could not find a frame rate from the scanned media - "
+                "scan the project first so a real fps is available "
+                "for accurate timecode math.",
+            )
+            return
+
+        all_segments = ResolveTranscriptParser().parse(
+            self._loaded_transcript_text
+        )
+        decisions = self._intelliscript_result.get("decisions", {})
+
+        entries = build_cut_list(all_segments, decisions, fps)
+
+        if not entries:
+            QMessageBox.information(
+                self,
+                "Nothing to export",
+                "No kept segments were found to build a cut list from.",
+            )
+            return
+
+        text = format_cut_list(entries, DEFAULT_HANDLE_SECONDS)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Cut List",
+            "",
+            "Text Files (*.txt);;All Files (*)",
+        )
+
+        if not path:
+            return
+
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Could Not Save Cut List", str(exc)
+            )
+            return
+
+        self.statusBar().showMessage(f"Cut list saved: {Path(path).name}")
 
     def load_transcript(self):
         """
@@ -526,8 +817,8 @@ class MainWindow(QMainWindow):
         # ML-052: a newly loaded transcript invalidates any
         # IntelliScript result generated from a DIFFERENT transcript
         # - otherwise generate_youtube_metadata() could pair this
-        # new transcript's text with stale decisions from the old
-        # one, silently producing wrong chapter timing.
+        # new transcript's text with stale decisions from the one,
+        # silently producing wrong chapter timing.
         self._intelliscript_result = None
 
         self.docks.transcript_panel.set_loaded_file(Path(path).name)
@@ -551,10 +842,11 @@ class MainWindow(QMainWindow):
 
     def generate_intelliscript(self):
         """
-        Runs IntelliScriptEditor on a background thread (Ollama
-        decides keep/cut + paragraph grouping only; the exact
-        original wording is reassembled deterministically - see
-        IntelliScriptAssembler). Never touches Resolve.
+        Runs IntelliScriptEditor on a background thread (the
+        configured AI provider decides keep/cut + paragraph
+        grouping only; the exact original wording is reassembled
+        deterministically - see IntelliScriptAssembler). Never
+        touches Resolve.
         """
 
         if not self._loaded_transcript_text:
@@ -582,7 +874,6 @@ class MainWindow(QMainWindow):
 
         self._intelliscript_worker = IntelliScriptWorker(
             raw_transcript_text=self._loaded_transcript_text,
-            model=load_ollama_model(),
         )
         self._intelliscript_worker.succeeded.connect(
             self._on_intelliscript_succeeded

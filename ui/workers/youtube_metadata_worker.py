@@ -3,12 +3,12 @@
 SBA AI Studio
 YouTube Metadata Worker
 ML-028-002 / ML-052 (IntelliScript-based chapter wiring)
-Version : 1.2.0 Alpha
+Version : 1.3.0 Alpha
 ============================================================
 
 Runs YouTube metadata generation (Planning Engine -> ride
-summary -> Ollama) on a background thread, so a slow model load
-or an unreachable Ollama instance doesn't freeze the GUI.
+summary -> configured AI provider) on a background thread, so a
+slow model load or an unreachable backend doesn't freeze the GUI.
 
 run() is deliberately plain, synchronous Python calling
 already-regression-tested services (TimelinePlanningService,
@@ -33,16 +33,27 @@ Chapter generation (re-parsing the transcript + running
 IntelliScriptChapterGenerator) is wrapped in its own try/except so
 a failure here never blocks the actual title/description/tags
 from being returned - it just falls back to no chapters section.
+
+Version 1.3.0 (Groq provider backlog item): YouTubeMetadataGenerator's
+default (get_ai_provider()) now reads Settings' AI Provider choice
+(Ollama or Groq) and its model itself, so this worker no longer
+constructs a client itself. The "model" parameter is kept ONLY for
+backward compatibility with existing regression tests that still
+pass it (e.g. model="llama3.2") - it is accepted but intentionally
+unused; provider/model selection now happens entirely inside
+YouTubeMetadataGenerator's default. A future cleanup could remove
+this parameter once those tests are updated to stop passing it.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
+from sba_resolve.core.services.groq_provider import GroqError
 from sba_resolve.core.services.intelliscript_chapter_generator import (
     IntelliScriptChapterGenerator,
 )
-from sba_resolve.core.services.ollama_client import OllamaClient, OllamaError
+from sba_resolve.core.services.ollama_client import OllamaError
 from sba_resolve.core.services.resolve_transcript_parser import (
     ResolveTranscriptParser,
 )
@@ -74,6 +85,8 @@ class YouTubeMetadataWorker(QThread):
         super().__init__(parent)
         self.media_list = list(media_list)
         self.project_name = project_name
+        # Accepted for backward compatibility only - see class
+        # docstring. Intentionally not used to construct anything.
         self.model = model
         self.extra_notes = extra_notes
         self.raw_transcript_text = raw_transcript_text
@@ -88,9 +101,7 @@ class YouTubeMetadataWorker(QThread):
 
             chapter_days = self._safe_generate_intelliscript_chapters()
 
-            generator = YouTubeMetadataGenerator(
-                ollama_client=OllamaClient(model=self.model)
-            )
+            generator = YouTubeMetadataGenerator()
 
             metadata = generator.generate(
                 summary,
@@ -99,7 +110,7 @@ class YouTubeMetadataWorker(QThread):
                 chapter_days=chapter_days,
             )
 
-        except OllamaError as exc:
+        except (OllamaError, GroqError) as exc:
             self.failed.emit(str(exc))
             return
 

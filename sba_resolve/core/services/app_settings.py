@@ -17,6 +17,11 @@ Currently exposes:
     load_timeline_creation_enabled() -> bool
     load_multicam_audio_sync_enabled() -> bool
     load_ollama_model() -> str
+    load_ai_provider() -> str
+    load_groq_api_key() -> str
+    load_groq_model() -> str
+    load_intelliscript_guidance() -> str
+    load_openrouteservice_api_key() -> str
     load_exiftool_path() -> str
     load_resolve_module_path() -> str
     load_theme() -> str
@@ -82,6 +87,13 @@ relative to the directory containing the actual .exe
 (Path(sys.executable).resolve().parent) instead. Running from
 source (sys.frozen unset) is completely unaffected - same
 parents[3]-based path as before.
+
+Version 1.4.0 also adds load_ai_provider() / load_groq_api_key() /
+load_groq_model() (Groq provider backlog item),
+load_intelliscript_guidance() (editable prompt request,
+2026-07-20), and load_openrouteservice_api_key() (real
+road-following map routing, 2026-07-21) - the ORS key is never
+logged or printed anywhere it's read.
 """
 
 from __future__ import annotations
@@ -239,6 +251,167 @@ def load_ollama_model(path: Path | None = None) -> str:
 
     if not isinstance(value, str) or not value.strip():
         return default_model
+
+    return value
+
+
+def load_ai_provider(path: Path | None = None) -> str:
+    """
+    Reads "ai_provider" from config/settings.json.
+
+    Returns "ollama" (the original, only-ever behaviour before this
+    setting existed) if the file is missing, isn't valid JSON,
+    doesn't contain that key, or the value isn't "ollama" or "groq" -
+    this never raises.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    default_provider = "ollama"
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_provider
+
+    value = raw.get("ai_provider", default_provider)
+
+    if value not in ("ollama", "groq"):
+        return default_provider
+
+    return value
+
+
+def load_groq_api_key(path: Path | None = None) -> str:
+    """
+    Reads "groq_api_key" from config/settings.json. Returns "" (no
+    key set) if the file is missing, isn't valid JSON, doesn't
+    contain that key, or the value isn't a string - this never
+    raises. Never logged or printed anywhere this value is read.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    value = raw.get("groq_api_key", "")
+
+    if not isinstance(value, str):
+        return ""
+
+    return value
+
+
+def load_groq_model(path: Path | None = None) -> str:
+    """
+    Reads "groq_model" from config/settings.json.
+
+    Returns "llama-3.3-70b-versatile" (Groq's general-purpose default
+    model) if the file is missing, isn't valid JSON, doesn't contain
+    that key, or the value isn't a non-empty string - this never
+    raises.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    default_model = "llama-3.3-70b-versatile"
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_model
+
+    value = raw.get("groq_model", default_model)
+
+    if not isinstance(value, str) or not value.strip():
+        return default_model
+
+    return value
+
+
+DEFAULT_INTELLISCRIPT_GUIDANCE = """Act as an expert video editor working on a motorcycle vlog.
+
+Below is a numbered list of transcript segments, in original
+spoken order. For EACH segment, decide whether to KEEP or CUT it,
+and whether it starts a new paragraph (topic/beat change).
+
+Guidelines:
+- Cut dead air, stuttering, and repetitive filler.
+- Cut rambling, confusing, or unfinished asides that don't add
+  anything to the story.
+- Cut meta-commentary about the video itself (e.g. the speaker
+  talking about what they've just been talking about).
+- Keep the core storyline and message engaging.
+- Group consecutive KEPT segments into paragraphs by topic - set
+  paragraph_break_before true whenever a segment starts a new
+  topic or beat, false if it continues the same paragraph as the
+  previous kept segment.
+
+CRITICAL: you are ONLY deciding keep/cut and paragraph grouping.
+Do not rewrite, reword, correct, or paraphrase anything - you
+have no ability to supply replacement text, and any text you
+included in your response would be ignored. The exact original
+words are reassembled automatically from your keep/cut decisions."""
+
+
+def load_intelliscript_guidance(path: Path | None = None) -> str:
+    """
+    Reads "intelliscript_prompt_guidance" from config/settings.json -
+    the editorial instructions portion of IntelliScriptEditor's
+    prompt (what counts as filler/rambling/meta-commentary, how to
+    group paragraphs). Deliberately does NOT cover the mechanical
+    parts of the prompt (the segment list itself, or the JSON
+    response-format instructions) - those stay fixed in
+    intelliscript_editor.py, since a broken JSON-format instruction
+    would break parsing regardless of what Gary intended.
+
+    Returns DEFAULT_INTELLISCRIPT_GUIDANCE (the original, only-ever
+    wording before this was editable) if the file is missing, isn't
+    valid JSON, doesn't contain that key, or the value isn't a
+    non-empty string - this never raises.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_INTELLISCRIPT_GUIDANCE
+
+    value = raw.get(
+        "intelliscript_prompt_guidance", DEFAULT_INTELLISCRIPT_GUIDANCE
+    )
+
+    if not isinstance(value, str) or not value.strip():
+        return DEFAULT_INTELLISCRIPT_GUIDANCE
+
+    return value
+
+
+def load_openrouteservice_api_key(path: Path | None = None) -> str:
+    """
+    Reads "openrouteservice_api_key" from config/settings.json.
+    Returns "" (no key set - MapWidget falls back to the original
+    straight pin-to-pin lines) if the file is missing, isn't valid
+    JSON, doesn't contain that key, or the value isn't a string -
+    this never raises. Never logged or printed anywhere this value
+    is read.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    value = raw.get("openrouteservice_api_key", "")
+
+    if not isinstance(value, str):
+        return ""
 
     return value
 

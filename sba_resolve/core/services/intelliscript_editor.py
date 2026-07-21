@@ -37,10 +37,12 @@ import json
 import re
 
 from sba_resolve.core.models.transcript_segment import TranscriptSegment
+from sba_resolve.core.services.ai_provider import AIProvider
+from sba_resolve.core.services.ai_provider_factory import get_ai_provider
+from sba_resolve.core.services.app_settings import load_intelliscript_guidance
 from sba_resolve.core.services.intelliscript_assembler import (
     IntelliScriptAssembler,
 )
-from sba_resolve.core.services.ollama_client import OllamaClient
 from sba_resolve.core.services.resolve_transcript_parser import (
     ResolveTranscriptParser,
 )
@@ -52,8 +54,13 @@ class IntelliScriptEditor:
     transcript export.
     """
 
-    def __init__(self, ollama_client: OllamaClient | None = None) -> None:
-        self.ollama_client = ollama_client or OllamaClient()
+    def __init__(self, ollama_client: AIProvider | None = None) -> None:
+        # Parameter name kept as "ollama_client" (not renamed to
+        # "ai_provider") so every existing regression test that
+        # constructs this with ollama_client=FakeOllamaClient(...)
+        # keeps working unchanged - only the default (what runs when
+        # nothing is passed) now honours Settings' AI Provider choice.
+        self.ollama_client = ollama_client or get_ai_provider()
         self.parser = ResolveTranscriptParser()
         self.assembler = IntelliScriptAssembler()
 
@@ -129,29 +136,9 @@ class IntelliScriptEditor:
 
         last_index = speech_segments[-1].index
 
-        return f"""Act as an expert video editor working on a motorcycle vlog.
+        guidance = load_intelliscript_guidance()
 
-Below is a numbered list of transcript segments, in original
-spoken order. For EACH segment, decide whether to KEEP or CUT it,
-and whether it starts a new paragraph (topic/beat change).
-
-Guidelines:
-- Cut dead air, stuttering, and repetitive filler.
-- Cut rambling, confusing, or unfinished asides that don't add
-  anything to the story.
-- Cut meta-commentary about the video itself (e.g. the speaker
-  talking about what they've just been talking about).
-- Keep the core storyline and message engaging.
-- Group consecutive KEPT segments into paragraphs by topic - set
-  paragraph_break_before true whenever a segment starts a new
-  topic or beat, false if it continues the same paragraph as the
-  previous kept segment.
-
-CRITICAL: you are ONLY deciding keep/cut and paragraph grouping.
-Do not rewrite, reword, correct, or paraphrase anything - you
-have no ability to supply replacement text, and any text you
-included in your response would be ignored. The exact original
-words are reassembled automatically from your keep/cut decisions.
+        return f"""{guidance}
 
 Segments:
 {segments_text}
