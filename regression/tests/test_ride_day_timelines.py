@@ -136,20 +136,24 @@ class RideDayTimelinesRegressionTest(BaseRegressionTest):
             raise RuntimeError("create_timeline() returned None.")
 
         # --------------------------------------------------
-        # 1. Exactly one timeline per ride day.
+        # 1. One timeline per ride day, PLUS a Master timeline
+        #    that nests them.
         # --------------------------------------------------
 
-        if len(media_pool.created_timelines) != 2:
+        if len(media_pool.created_timelines) != 3:
             raise RuntimeError(
-                f"Expected exactly 2 timelines created (one per "
-                f"ride day), got "
+                f"Expected exactly 3 timelines created (2 ride "
+                f"days + 1 Master), got "
                 f"{len(media_pool.created_timelines)}."
             )
 
-        day1_timeline, day2_timeline = media_pool.created_timelines
+        day1_timeline, day2_timeline, master_timeline = (
+            media_pool.created_timelines
+        )
 
         # --------------------------------------------------
-        # 2. Correct naming: "<project> Day <N> - <YYYY-MM-DD>".
+        # 2. Correct naming: "<project> Day <N> - <YYYY-MM-DD>",
+        #    and "<project> Master" for the assembled timeline.
         # --------------------------------------------------
 
         if day1_timeline.GetName() != "Test Project Day 1 - 2026-07-01":
@@ -166,13 +170,48 @@ class RideDayTimelinesRegressionTest(BaseRegressionTest):
                 f"{day2_timeline.GetName()!r}."
             )
 
-        # The return value should be the LAST timeline built
-        # (Day 2), matching the single-timeline return contract
-        # existing callers/tests rely on.
-        if timeline is not day2_timeline:
+        if master_timeline.GetName() != "Test Project Master":
             raise RuntimeError(
-                "Expected create_timeline() to return the last "
-                "timeline built (Day 2)."
+                f"Expected the assembled timeline named "
+                f"'Test Project Master', got "
+                f"{master_timeline.GetName()!r}."
+            )
+
+        # The return value should be the Master timeline - the
+        # whole point of assembling it is that it becomes the
+        # final review/export sequence.
+        if timeline is not master_timeline:
+            raise RuntimeError(
+                "Expected create_timeline() to return the "
+                "assembled Master timeline."
+            )
+
+        # --------------------------------------------------
+        # 2b. The Master timeline must have nested BOTH day
+        #     timelines, in ride-day order, as Timeline-type
+        #     Media Pool items (not the underlying clips
+        #     directly).
+        # --------------------------------------------------
+
+        master_items = master_timeline.items_by_track.get(1, [])
+
+        if len(master_items) != 2:
+            raise RuntimeError(
+                f"Expected 2 nested day timelines on the Master "
+                f"timeline, got {len(master_items)}."
+            )
+
+        nested_names = [
+            item.GetMediaPoolItem().GetName() for item in master_items
+        ]
+
+        if nested_names != [
+            "Test Project Day 1 - 2026-07-01",
+            "Test Project Day 2 - 2026-07-03",
+        ]:
+            raise RuntimeError(
+                f"Expected the Master timeline to nest Day 1 "
+                f"then Day 2 in order, got {nested_names!r}."
             )
 
         # --------------------------------------------------
@@ -313,8 +352,8 @@ class RideDayTimelinesRegressionTest(BaseRegressionTest):
         #    24fps-based frame math on both days.
         # --------------------------------------------------
 
-        if project.current_timeline is not day2_timeline:
+        if project.current_timeline is not master_timeline:
             raise RuntimeError(
                 "Expected the project's current timeline to end "
-                "on the last one built (Day 2)."
+                "on the assembled Master timeline."
             )

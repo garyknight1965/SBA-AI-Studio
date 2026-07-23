@@ -77,7 +77,7 @@ Timeline Builder
 
 Status
 
-Substantially complete, with the most important structural gap still open
+Mostly complete - one timeline per ride day now shipped; real multicam clip creation still open
 
 Deliverables
 
@@ -86,14 +86,12 @@ Deliverables
 - Audio Tracks - done
 - Markers - done
 - Clip Placement - done (real `TimelinePlacement` data, three layers of write verification)
+- One Resolve timeline PER RIDE DAY - **done** (2026-07-23). Each day builds its own independent timeline (e.g. "Test Project Day 1 - 2026-07-01"), with placements and markers rebased to that day's own earliest clip rather than the whole project's. `PlanningResult` itself stays project-wide; the split happens in `RideDayGrouper` at the Resolve Builder boundary. A "<project> Master" timeline is then assembled automatically, nesting every day's timeline into it in order for final review/export.
 - Multicam Support - partial: overlap window detection + separate tracks are done; real Resolve multicam *clip* creation is not yet built
 
 Known gap (highest priority open item)
 
-- **One Resolve timeline per Ride Day.** The current output is still one
-  flat "Master" timeline per project. The product vision (Project ->
-  Ride Days -> Scenes -> Multicam -> Timeline) needs Resolve output
-  grouped and built per ride day instead.
+- **Real Resolve multicam clip creation.** Currently overlap windows get separate per-camera tracks, not an actual Resolve multicam clip.
 
 ---
 

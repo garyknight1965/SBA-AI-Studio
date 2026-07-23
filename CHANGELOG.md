@@ -1,6 +1,26 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+## 2026-07-23 (ML-057 follow-up: Master timeline assembly)
+
+### Added
+- `create_timeline()` now also assembles a "<project> Master" timeline
+  after building every ride day's own timeline - each day's timeline is
+  nested into it, in ride-day order, as a single combined review/export
+  sequence. Every Resolve Timeline also exists as a Media Pool item once
+  created, so nesting reuses the ordinary `AppendToTimeline` mechanism -
+  no special "nest a timeline" API call is needed. No `recordFrame` is
+  supplied for these appends; Resolve places each one at the end of the
+  track's existing content in call order, so no frame math is guessed
+  for the Master's assembly (in keeping with the project's "never
+  guess" philosophy).
+- `create_timeline()` now returns the assembled Master timeline (rather
+  than the last day timeline built), since that's the sequence intended
+  for final review/export.
+- Regression coverage extended: `test_ride_day_timelines.py` now also
+  verifies the Master timeline is created, correctly named, and nests
+  both day timelines in the right order.
+
 ## 2026-07-23 (ML-057: One Resolve timeline per ride day)
 
 ### Added

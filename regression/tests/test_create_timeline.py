@@ -52,6 +52,21 @@ class FakeClip:
         return self.filename
 
 
+def _is_timeline_nesting_call(call):
+    """
+    True if this AppendToTimeline call is create_timeline()'s
+    Master-timeline nesting step (appending a day's Timeline as
+    a Media Pool item), rather than a normal per-clip placement
+    call.
+    """
+
+    return any(
+        item["mediaPoolItem"].GetClipProperty().get("Type")
+        == "Timeline"
+        for item in call
+    )
+
+
 class FakeTimeline:
 
     def __init__(self, name, timeline_fps="24"):
@@ -136,17 +151,60 @@ class FakeTimelineItem:
         return self._start_frame
 
 
+class FakeTimelineClip:
+    """
+    Represents a Timeline's own entry in the Media Pool (every
+    real Resolve Timeline also exists as a Media Pool item of
+    Type "Timeline" - this is what create_timeline() looks up to
+    nest a day's timeline into the Master timeline).
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+    def GetClipProperty(self):
+        return {
+            "Type": "Timeline",
+            "File Name": self.name,
+            "Clip Name": self.name,
+        }
+
+    def GetName(self):
+        return self.name
+
+
+class FakeFolder:
+
+    def __init__(self):
+        self.clips = []
+        self.subfolders = []
+
+    def GetClipList(self):
+        return self.clips
+
+    def GetSubFolderList(self):
+        return self.subfolders
+
+
 class FakeMediaPool:
 
     def __init__(self):
         self.append_calls = []
         self.timeline = None
         self.created_timelines = []
+        self.root_folder = FakeFolder()
+
+    def GetRootFolder(self):
+        return self.root_folder
 
     def CreateEmptyTimeline(self, name):
         timeline = FakeTimeline(name)
         self.timeline = timeline
         self.created_timelines.append(timeline)
+        # Every real Resolve Timeline also exists as a Media Pool
+        # item - mirror that here so _find_timeline_media_pool_item()
+        # can find it for Master-timeline nesting.
+        self.root_folder.clips.append(FakeTimelineClip(name))
         return timeline
 
     def AppendToTimeline(self, items):
@@ -161,14 +219,33 @@ class FakeMediaPool:
         AppendToTimeline to simulate specific Resolve failure
         modes, but should still route through this so
         GetItemListInTrack() reflects what was actually placed.
+
+        When an item has no "recordFrame" key (the Master
+        timeline's nested-clip appends never specify one), a
+        synthetic sequence position is assigned instead - this
+        fake harness only needs to prove ORDERING for those
+        appends, not real Resolve duration-based end-of-track
+        frame math.
         """
 
         appended = []
 
         for item in items:
 
+            record_frame = item.get("recordFrame")
+
+            if record_frame is None:
+                existing = (
+                    self.timeline.items_by_track.get(
+                        item["trackIndex"], []
+                    )
+                    if self.timeline is not None
+                    else []
+                )
+                record_frame = len(existing)
+
             timeline_item = FakeTimelineItem(
-                item["mediaPoolItem"], item["recordFrame"]
+                item["mediaPoolItem"], record_frame
             )
 
             if self.timeline is not None:
@@ -294,16 +371,35 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
                 "timeline."
             )
 
+        # create_timeline() now returns the assembled Master
+        # timeline (see ML-057 follow-up) - this fixture has a
+        # single ride day, so the actual day timeline with the
+        # real tracks/clips/markers is the first one created.
+        day_timeline = media_pool.created_timelines[0]
+
         # One AppendToTimeline call per distinct track is now
         # expected (ML-018 - splitting per track avoids a
         # same-frame, cross-track batching issue diagnosed in
         # Resolve where a clip sharing another track's clip's
         # exact recordFrame within the SAME batch call could
         # silently vanish from the timeline entirely).
+        #
+        # create_timeline() also nests this day's timeline into
+        # a Master timeline afterward (a separate, later
+        # AppendToTimeline call carrying a Timeline-type Media
+        # Pool item, not a clip) - excluded here since this
+        # section is only about per-clip placement mechanics on
+        # the day's own timeline.
+
+        day_clip_calls = [
+            call
+            for call in media_pool.append_calls
+            if not _is_timeline_nesting_call(call)
+        ]
 
         items = [
             item
-            for call in media_pool.append_calls
+            for call in day_clip_calls
             for item in call
         ]
 
@@ -324,15 +420,15 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
                 f"{len(track_indexes)}."
             )
 
-        if len(media_pool.append_calls) != len(track_indexes):
+        if len(day_clip_calls) != len(track_indexes):
             raise RuntimeError(
                 "Expected one AppendToTimeline call per distinct "
-                f"track, got {len(media_pool.append_calls)} calls "
+                f"track, got {len(day_clip_calls)} calls "
                 f"for {len(track_indexes)} track(s)."
             )
 
         # Enough video tracks must have been created.
-        if timeline.GetTrackCount("video") < max(track_indexes):
+        if day_timeline.GetTrackCount("video") < max(track_indexes):
             raise RuntimeError(
                 "Not enough video tracks were created for the "
                 "highest track_index used."
@@ -340,7 +436,7 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
 
         # Tracks must be named after their camera.
         named_tracks = {
-            name for name in timeline.track_names.values()
+            name for name in day_timeline.track_names.values()
         }
 
         if not any("HERO13" in name for name in named_tracks):
@@ -380,21 +476,21 @@ class CreateTimelineRegressionTest(BaseRegressionTest):
 
         # This fixture has no camera overlap, so only the Ride Day
         # 1 marker should have been written (at frame 0).
-        if len(timeline.markers) != 1:
+        if len(day_timeline.markers) != 1:
             raise RuntimeError(
                 f"Expected 1 marker written to the timeline, got "
-                f"{len(timeline.markers)}."
+                f"{len(day_timeline.markers)}."
             )
 
-        if 0 not in timeline.markers:
+        if 0 not in day_timeline.markers:
             raise RuntimeError(
                 "Expected a marker at frame 0 (Ride Day 1)."
             )
 
-        if timeline.markers[0]["name"] != "Ride Day 1":
+        if day_timeline.markers[0]["name"] != "Ride Day 1":
             raise RuntimeError(
                 f"Expected marker at frame 0 named 'Ride Day 1', "
-                f"got {timeline.markers[0]['name']!r}."
+                f"got {day_timeline.markers[0]['name']!r}."
             )
 
 
@@ -459,7 +555,17 @@ class FakeMediaPoolWrongPosition(FakeMediaPool):
             props = item["mediaPoolItem"].GetClipProperty()
             name = props.get("File Name") or props.get("Clip Name")
 
-            actual_frame = item["recordFrame"]
+            actual_frame = item.get("recordFrame")
+
+            if actual_frame is None:
+                existing = (
+                    self.timeline.items_by_track.get(
+                        item["trackIndex"], []
+                    )
+                    if self.timeline is not None
+                    else []
+                )
+                actual_frame = len(existing)
 
             if name in self.wrong_position_for:
                 # Lands somewhere else entirely, rather than at

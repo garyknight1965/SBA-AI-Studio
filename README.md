@@ -51,7 +51,9 @@ Current
 - YouTube metadata generation (title/description/tags/chapters) from ride reconstruction data (ride days, scenes, duration, cameras, GPS-derived locations) via a local Ollama model - runs independently of Resolve
 - Basic desktop GUI (PySide6): workspace tree, media browser, metadata panel, project statistics, and a local Day/Scene timeline preview - all Resolve-independent, with simplified combined Scan+Import and Transcript+IntelliScript File menu actions
 - Resolve scripting module auto-located (env var / config / OS default paths), instead of depending on machine-wide setup outside this project
-- Regression suite: 39+ tests, fully platform-independent (no hardcoded machine-specific paths)
+- One Resolve timeline PER RIDE DAY (e.g. "Test Project Day 1 - 2026-07-01"), instead of one flat "Master" timeline for the whole project - each day's clips, tracks, and markers are rebased to that day's own timeline independently
+- A "<project> Master" timeline is then assembled automatically, nesting every day's timeline into it in order as a single combined review/export sequence
+- Regression suite: 42+ tests, fully platform-independent (no hardcoded machine-specific paths)
 
 In progress
 
@@ -59,7 +61,6 @@ In progress
 
 Known gaps against the original architecture vision
 
-- One Resolve timeline per Ride Day (currently one flat "Master" timeline per project)
 - Real Resolve multicam *clip* creation (currently: overlap detection + separate tracks, no automatic multicam clip)
 - Hero8 timestamp confidence scoring / sync-against-Hero13 (camera clock drift between GoPros is not yet corrected)
 - Old `TimelineBuilderService` still present alongside the real `TimelinePlanningService` (tech debt, not yet retired)

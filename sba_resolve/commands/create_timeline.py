@@ -67,6 +67,17 @@ No Resolve API code lives in the Planning Engine itself
 sba_resolve.core.services.ride_day_grouper, and their
 dependencies) - this module is the boundary where planning
 output is translated into real Resolve API calls.
+
+RES-006F.7b (2026-07-23, per Gary's follow-up request) also
+assembles a "<base name> Master" timeline once every day's
+timeline has been built, nesting each day's timeline into it in
+ride-day order as a single combined review/export sequence.
+Every Resolve Timeline also exists as an item in the Media Pool
+once created, so nesting reuses the ordinary AppendToTimeline
+mechanism - no special "nest a timeline" API is needed. No
+recordFrame is supplied for these appends; Resolve places each
+one at the end of the track's existing content in call order,
+so no frame math is guessed for the Master's assembly.
 """
 
 from __future__ import annotations
@@ -218,7 +229,7 @@ def create_timeline(context):
 
     day_plans = RideDayGrouper.group(result)
 
-    last_timeline = None
+    day_timelines: list[tuple[str, object]] = []
 
     for day_plan in day_plans:
 
@@ -245,9 +256,149 @@ def create_timeline(context):
             project_fps,
         )
 
-        last_timeline = timeline
+        day_timelines.append((timeline_name, timeline))
 
-    return last_timeline
+    # -----------------------------------------------------
+    # Assemble a Master timeline that nests every day's
+    # timeline, in ride-day order, as a single review/export
+    # sequence. Each day timeline is appended as a nested clip -
+    # every Resolve Timeline also exists as an item in the Media
+    # Pool once created, so this reuses the normal
+    # AppendToTimeline mechanism rather than any special nesting
+    # API. Sequential placement uses Resolve's own "append at
+    # the end of the track" behaviour (no explicit recordFrame),
+    # so no frame math is guessed here - the Master's own
+    # ordering does the work.
+    # -----------------------------------------------------
+
+    master_timeline = _build_master_timeline(
+        project, media_pool, base_timeline_name, day_timelines
+    )
+
+    return master_timeline or (
+        day_timelines[-1][1] if day_timelines else None
+    )
+
+
+def _build_master_timeline(
+    project,
+    media_pool,
+    base_timeline_name,
+    day_timelines,
+):
+    """
+    Creates (or finds) a "<base name> Master" timeline and nests
+    each day's timeline into it, in order, as a single combined
+    review/export sequence.
+
+    Returns the Master timeline, or None if there were no day
+    timelines to nest, or if none of them could be found as
+    Media Pool items (should not happen in real Resolve - every
+    Timeline is also a Media Pool item - but this is defensive
+    rather than assumed).
+    """
+
+    if not day_timelines:
+        return None
+
+    master_timeline_name = f"{base_timeline_name} Master"
+
+    print()
+    print("=" * 60)
+    print(f"Master Timeline : {master_timeline_name}")
+    print("=" * 60)
+
+    master_timeline = _find_or_create_timeline(
+        project, media_pool, master_timeline_name
+    )
+
+    project.SetCurrentTimeline(master_timeline)
+
+    nested_count = 0
+    missing = []
+
+    for timeline_name, _timeline in day_timelines:
+
+        clip = _find_timeline_media_pool_item(
+            media_pool, timeline_name
+        )
+
+        if clip is None:
+            missing.append(timeline_name)
+            continue
+
+        # No recordFrame supplied - Resolve appends at the end
+        # of the track's existing content, in call order. This
+        # keeps the day timelines in ride-day order without this
+        # module computing any frame math itself.
+        appended = media_pool.AppendToTimeline(
+            [{"mediaPoolItem": clip, "trackIndex": 1}]
+        )
+
+        if appended:
+            nested_count += 1
+        else:
+            missing.append(timeline_name)
+
+    print(
+        f"Nested {nested_count}/{len(day_timelines)} day "
+        f"timeline(s) into the Master timeline."
+    )
+
+    if missing:
+        print(
+            f"WARNING: {len(missing)} day timeline(s) could not "
+            f"be nested into the Master timeline (no matching "
+            f"Media Pool item found, or Resolve rejected the "
+            f"append):"
+        )
+        for name in missing:
+            print(f"  - {name}")
+
+    return master_timeline
+
+
+def _find_timeline_media_pool_item(media_pool, timeline_name):
+    """
+    Every Resolve Timeline also exists as an item in the Media
+    Pool (in whichever bin it was created in). Finds that
+    MediaPoolItem by name so a Timeline can be appended onto
+    another timeline as a nested clip, the same way any other
+    clip is appended. Returns None if not found.
+    """
+
+    root_folder = media_pool.GetRootFolder()
+
+    if root_folder is None:
+        return None
+
+    def search(folder):
+
+        for clip in folder.GetClipList() or []:
+
+            try:
+                props = clip.GetClipProperty()
+            except Exception:
+                continue
+
+            is_timeline_clip = props.get("Type") == "Timeline"
+
+            matches_name = (
+                props.get("File Name") == timeline_name
+                or props.get("Clip Name") == timeline_name
+            )
+
+            if is_timeline_clip and matches_name:
+                return clip
+
+        for sub_folder in folder.GetSubFolderList() or []:
+            found = search(sub_folder)
+            if found is not None:
+                return found
+
+        return None
+
+    return search(root_folder)
 
 
 def _find_or_create_timeline(project, media_pool, timeline_name):
