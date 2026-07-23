@@ -33,6 +33,8 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
 
     name = "YouTube Metadata UI (ML-028)"
 
+    requires_gui = True
+
     category = "Resolve"
 
     description = (

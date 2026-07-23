@@ -32,6 +32,8 @@ class TranscriptUiRegressionTest(BaseRegressionTest):
 
     name = "Transcript UI (ML-037)"
 
+    requires_gui = True
+
     category = "Resolve"
 
     description = (

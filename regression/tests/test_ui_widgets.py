@@ -36,6 +36,8 @@ class UiWidgetWiringRegressionTest(BaseRegressionTest):
 
     name = "UI Widget Wiring (ML-027)"
 
+    requires_gui = True
+
     category = "Resolve"
 
     description = (

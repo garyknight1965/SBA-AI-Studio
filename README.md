@@ -205,7 +205,10 @@ Status
 
 In active development - core Ride Reconstruction pipeline complete, structural Resolve-output work (per-day timelines, real multicam clips) still open, multi-camera audio-sync (ML-054) in progress.
 
-Regression suite: run `python run_regression.py` before every commit.
+Regression suite: run `python run_regression.py` before every commit
+(`--core` / `--ui` / `--resolve` / `--all` modes available; GUI-dependent
+tests report as BLOCKED rather than FAILED if the environment is missing
+a native GUI dependency such as `libGL.so.1`).
 
 ---
 

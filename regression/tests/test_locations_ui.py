@@ -40,6 +40,8 @@ class LocationsUiRegressionTest(BaseRegressionTest):
 
     name = "Locations UI (ML-040)"
 
+    requires_gui = True
+
     category = "Resolve"
 
     description = (

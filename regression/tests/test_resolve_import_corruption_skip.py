@@ -31,6 +31,8 @@ class ResolveImportCorruptionSkipRegressionTest(BaseRegressionTest):
 
     name = "Resolve Import Corruption Skip (ML-036)"
 
+    requires_gui = True
+
     category = "Resolve"
 
     description = (

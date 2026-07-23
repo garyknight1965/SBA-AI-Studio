@@ -24,6 +24,11 @@ class BaseRegressionTest(ABC):
     category = "General"
     description = ""
 
+    # Mode-filtering flags (used by --core / --ui / --resolve / --all and
+    # by the GUI preflight check). A test can set more than one to True.
+    requires_gui = False
+    requires_resolve = False
+
     def execute(self) -> RegressionResult:
 
         start = perf_counter()

@@ -1,6 +1,28 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+## 2026-07-22
+
+### Added
+- Regression suite modes: `python run_regression.py --core / --ui / --resolve / --all`.
+  `--core` runs everything that needs neither a real headless GUI
+  nor a real Resolve connection; `--ui` runs only the real-PySide6-widget
+  tests; `--resolve` is reserved for future Resolve-integration tests
+  (none require it yet, since all Resolve API access in this suite is
+  mocked). No flag = `--all`, matching prior behaviour.
+- GUI dependency preflight (`regression/gui_preflight.py`): before running
+  any test that constructs a real (offscreen) PySide6 widget, the runner
+  tries to construct a `QApplication` once. If a native dependency such as
+  `libGL.so.1` is missing, the affected tests are reported as **BLOCKED**
+  (environment limitation) instead of **FAILED**, with the underlying
+  reason printed once. Blocked tests do not affect the suite's exit code.
+- `RegressionResult` gained a `blocked` field/state, and
+  `BaseRegressionTest` gained `requires_gui` / `requires_resolve` flags
+  used for mode filtering and preflight gating. The 5 tests that
+  construct real PySide6 widgets (Locations UI, UI Widget Wiring,
+  Transcript UI, YouTube Metadata UI, Resolve Import Corruption Skip)
+  are now marked `requires_gui = True`.
+
 ## 2026-07-21
 
 ### Added
