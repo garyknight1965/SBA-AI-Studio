@@ -1,7 +1,38 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
-## 2026-07-23
+## 2026-07-23 (ML-057: One Resolve timeline per ride day)
+
+### Added
+- `create_timeline()` now builds one independent Resolve timeline PER
+  RIDE DAY (e.g. "Test Project Day 1 - 2026-07-01"), instead of one flat
+  "Master" timeline for the whole project. Each day's clips, tracks, and
+  markers are rebased to that day's own timeline independently - Day 2's
+  clips no longer carry Day 1's multi-day project-wide frame offset onto
+  their own timeline.
+- New `sba_resolve/core/services/ride_day_grouper.py`
+  (`RideDayGrouper`/`RideDayTimelinePlan`): splits the Planning Engine's
+  project-wide `PlanningResult` into one rebased plan per ride day.
+  `PlanningResult` itself is unchanged and stays project-wide (still
+  correct for multicam detection and statistics) - the per-day split is
+  business logic that lives here, at the Resolve Builder boundary, per
+  the architecture rule that Resolve command code never contains
+  business rules.
+- `TimelineMarker` and `UnsyncedClip` both gained a `ride_day` field so
+  markers and unsynced-clip reports can be grouped onto the correct
+  day's timeline.
+- `create_timeline()` now reads the project's configured timeline frame
+  rate once via `Project.GetSetting("timelineFrameRate")`, rather than
+  from a specific timeline - necessary since no timeline exists yet
+  before the very first one is built.
+- Two new regression tests: `test_ride_day_grouper.py` (rebasing math)
+  and `test_ride_day_timelines.py` (full end-to-end proof against the
+  fake Resolve API - 2 real timelines, correctly named, correctly
+  rebased, no marker/clip cross-contamination between days).
+- `ui/windows/main_window.py`'s `timeline_name` no longer appends
+  " Master", since the single-master-timeline concept is retired.
+
+## 2026-07-23 (doc/version cleanup)
 
 ### Fixed
 - `pyproject.toml` package version aligned to `2.1.0` (previously `0.1.0`,

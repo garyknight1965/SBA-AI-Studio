@@ -35,6 +35,13 @@ class TimelineMarker:
 
     generated: bool = True
 
+    # Which ride day this marker belongs to. Populated by
+    # TimelineMarkerGenerator. Used at the Resolve Builder
+    # boundary (create_timeline.py) to group markers onto the
+    # correct per-day timeline - not consumed by the Planning
+    # Engine itself.
+    ride_day: int = 0
+
     @property
     def has_description(self) -> bool:
         return bool(self.description.strip())
@@ -47,6 +54,7 @@ class TimelineMarker:
             "colour": self.colour,
             "category": self.category,
             "generated": self.generated,
+            "ride_day": self.ride_day,
         }
 
     def __str__(self) -> str:

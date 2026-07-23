@@ -103,6 +103,7 @@ class TimelineMarkerGenerator:
                     colour=TimelineMarkerGenerator.RIDE_DAY_COLOUR,
                     category="Ride Day",
                     generated=True,
+                    ride_day=ride_day,
                 )
             )
 
@@ -150,6 +151,7 @@ class TimelineMarkerGenerator:
                     colour=TimelineMarkerGenerator.SCENE_COLOUR,
                     category="Scene",
                     generated=True,
+                    ride_day=ride_day,
                 )
             )
 
@@ -172,6 +174,7 @@ class TimelineMarkerGenerator:
                     colour=TimelineMarkerGenerator.MULTICAM_COLOUR,
                     category="Multicam",
                     generated=True,
+                    ride_day=candidate.ride_day,
                 )
             )
 
@@ -238,6 +241,7 @@ class TimelineMarkerGenerator:
                     colour=primary.colour,
                     category=primary.category,
                     generated=True,
+                    ride_day=primary.ride_day,
                 )
             )
 

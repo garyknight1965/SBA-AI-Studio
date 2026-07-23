@@ -304,6 +304,7 @@ class TimelinePlanningService:
                         f"automatically (audio sync disabled) - "
                         f"requires manual placement/sync in Resolve."
                     ),
+                    ride_day=placement.ride_day,
                 )
             )
 
@@ -346,6 +347,7 @@ class TimelinePlanningService:
                     camera_name=placement.camera_name,
                     clip_name=placement.clip_name,
                     reason=result.reason,
+                    ride_day=placement.ride_day,
                 )
             )
 

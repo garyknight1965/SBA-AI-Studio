@@ -487,7 +487,7 @@ class MainWindow(QMainWindow):
                     for m in media_list
                 ],
                 "media_objects": media_list,
-                "timeline_name": f"{self.workspace.project_name} Master",
+                "timeline_name": self.workspace.project_name,
                 "gap_compression": load_gap_compression_settings(),
             }
 

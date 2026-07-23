@@ -3,52 +3,68 @@
 SBA AI Studio
 Resolve Command
 Create Timeline
-RES-006F.6 - ML-054: Config-gated audio sync + matching audio tracks
+RES-006F.7 - ML-057: One Resolve timeline per ride day
 ============================================================
 
-Builds the Resolve timeline using the ML-011 Planning Engine's
-PlanningResult, instead of a single naive sequential append.
+Builds one Resolve timeline PER RIDE DAY using the ML-011
+Planning Engine's PlanningResult, instead of a single flat
+"Master" timeline covering the whole project.
+
+The Planning Engine (TimelinePlanningService) still runs exactly
+once, project-wide, exactly as before - PlanningResult.placements
+still carry real, project-wide record_frame values. Splitting
+that project-wide result into one rebased plan per ride day is
+business logic, so it lives in the Planning-Engine-side
+RideDayGrouper service (sba_resolve.core.services.ride_day_grouper),
+NOT here - this module only consumes the resulting
+RideDayTimelinePlan objects and translates them into real Resolve
+API calls, one timeline at a time.
+
+Each day's timeline name follows Gary's chosen format:
+"<base name> Day <N> - <YYYY-MM-DD>" (falls back to
+"<base name> Day <N>" if no clip in that day has a known
+creation time to derive a date from).
 
 Each camera gets its own stable video track, and every clip is
-placed at its real, gap-preserving record_frame position.
-Resolve's AppendToTimeline "recordFrame" key was confirmed to
-support exact frame placement via
+placed at its real, gap-preserving record_frame position (now
+relative to that day's own earliest clip, not the whole
+project). Resolve's AppendToTimeline "recordFrame" key was
+confirmed to support exact frame placement via
 tools/resolve_gap_placement_test.py.
 
-RES-006F.3 additionally writes the Planning Engine's generated
-markers (ride day starts, multicam windows) onto the timeline
-via Timeline.AddMarker(). Same-frame markers are already merged
-by TimelineMarkerGenerator before they reach here, since Resolve
-only supports one marker per exact frame.
+Also writes the Planning Engine's generated markers (ride day
+starts, scene starts, multicam windows) onto each day's own
+timeline via Timeline.AddMarker(). Same-frame markers are
+already merged by TimelineMarkerGenerator before they reach
+here, since Resolve only supports one marker per exact frame.
 
-RES-006F.4 reads the timeline's actual frame rate via
-Timeline.GetSetting("timelineFrameRate") and passes it into the
-Planning Engine, instead of assuming a fixed 25fps.
+Reads the Resolve PROJECT's configured timeline frame rate via
+Project.GetSetting("timelineFrameRate") ONCE, up front - before
+any per-day timeline exists - and passes it into the Planning
+Engine. Every timeline created in the same Resolve project uses
+that project-wide frame rate by default, so one read up front is
+correct and avoids a chicken-and-egg problem (the Planning Engine
+needs fps before it can compute per-day frame numbers, but which
+day's timeline would we even read fps from first?).
 
-RES-006F.5 (ML-054 Step 2c) ensures a named track also exists
-for any camera that ONLY has clips the Planning Engine could not
-verify via audio sync (PlanningResult.unsynced_clips) - these
-clips are never appended to the timeline (never guessed), but
-still get a labeled, empty home track ready for manual sync in
-Resolve. A "Manual Sync Required" report is printed listing every
-such clip by camera, with its original filename and the reason
-sync failed.
+Ensures a named track also exists for any camera that ONLY has
+clips the Planning Engine could not verify via audio sync
+(PlanningResult.unsynced_clips, grouped per day) - these clips
+are never appended to the timeline (never guessed), but still
+get a labeled, empty home track ready for manual sync in
+Resolve. A "Manual Sync Required" report is printed per day
+listing every such clip by camera, with its original filename
+and the reason sync failed.
 
-RES-006F.6 (2026-07-19) reads "enable_multicam_audio_sync" from
-config/settings.json and passes it into TimelinePlanningService -
-OFF by default, since real-world testing found the audio
-correlation approach unreliable on every real footage pair
-tried. With it off, only the trusted reference/anchor camera
-(HERO13 when present) auto-places by timestamp; every other
-camera's multicam clips go straight to the placeholder-track
-path with no audio work attempted at all. This revision also
-creates a matching, identically-named AUDIO track for every
-video track (both the normal per-camera tracks and the new
-placeholder tracks), so a manually-dragged-in clip's audio has
-an obvious, correctly-labeled home too.
+Creates a matching, identically-named AUDIO track for every
+video track (both the normal per-camera tracks and the
+placeholder tracks) on each day's timeline, so a
+manually-dragged-in clip's audio has an obvious, correctly
+labeled home too.
 
 No Resolve API code lives in the Planning Engine itself
-(sba_resolve.core.services.timeline_planning_service and its
+(sba_resolve.core.services.timeline_planning_service,
+sba_resolve.core.services.ride_day_grouper, and their
 dependencies) - this module is the boundary where planning
 output is translated into real Resolve API calls.
 """
@@ -59,6 +75,7 @@ from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
     load_multicam_audio_sync_enabled,
 )
+from sba_resolve.core.services.ride_day_grouper import RideDayGrouper
 from sba_resolve.core.services.timeline_fps import (
     DEFAULT_PROJECT_FPS,
     parse_timeline_fps,
@@ -70,12 +87,19 @@ from sba_resolve.core.services.timeline_planning_service import (
 
 def create_timeline(context):
     """
-    Create a Resolve timeline from imported media.
+    Create one Resolve timeline per ride day from imported media.
 
     Uses the Planning Engine (TimelinePlanningService) to
     determine per-camera track assignment and frame-exact,
-    gap-preserving clip placement, then executes it against
-    the Resolve API.
+    gap-preserving clip placement, then RideDayGrouper to split
+    that project-wide result into one rebased plan per ride day,
+    then executes each day's plan against the Resolve API as its
+    own timeline.
+
+    Returns the LAST timeline built (or None if there was
+    nothing to build), matching the previous single-timeline
+    return contract for callers/tests that only ever dealt with
+    one ride day.
     """
 
     project = context.project
@@ -90,53 +114,33 @@ def create_timeline(context):
         print("No imported clips available.")
         return None
 
-    timeline_name = (
+    base_timeline_name = (
         context.project_data.get("timeline_name")
-        or f"{context.project_data['project_name']} Master"
+        or context.project_data["project_name"]
     )
 
     print("=" * 60)
     print("Create Timeline")
     print("=" * 60)
-    print(f"Timeline : {timeline_name}")
 
     # -----------------------------------------------------
-    # Find or create the timeline
+    # Read the project's configured timeline frame rate ONCE,
+    # up front. Placement math (both position and duration) must
+    # use this, not a hardcoded assumption, or gap-preserving
+    # sync drifts against footage shot at a different native
+    # frame rate than the timeline. Every timeline subsequently
+    # created in this project uses this same frame rate by
+    # default.
     # -----------------------------------------------------
 
-    timeline = None
-
-    for index in range(1, project.GetTimelineCount() + 1):
-        existing = project.GetTimelineByIndex(index)
-        if existing and existing.GetName() == timeline_name:
-            timeline = existing
-            print("Using existing timeline.")
-            break
-
-    if timeline is None:
-        timeline = media_pool.CreateEmptyTimeline(timeline_name)
-        if timeline is None:
-            raise RuntimeError(
-                f"Unable to create timeline '{timeline_name}'."
-            )
-
-    project.SetCurrentTimeline(timeline)
-
-    # -----------------------------------------------------
-    # Read the real timeline frame rate. Placement math (both
-    # position and duration) must use this, not a hardcoded
-    # assumption, or gap-preserving sync drifts against footage
-    # shot at a different native frame rate than the timeline.
-    # -----------------------------------------------------
-
-    raw_fps = timeline.GetSetting("timelineFrameRate")
+    raw_fps = project.GetSetting("timelineFrameRate")
 
     project_fps = parse_timeline_fps(raw_fps)
 
     if project_fps is None:
         print(
-            f"WARNING: Could not read timeline frame rate "
-            f"(got {raw_fps!r}); using default "
+            f"WARNING: Could not read the project's timeline "
+            f"frame rate (got {raw_fps!r}); using default "
             f"{DEFAULT_PROJECT_FPS} fps."
         )
         project_fps = DEFAULT_PROJECT_FPS
@@ -148,8 +152,134 @@ def create_timeline(context):
     # objects by filename rather than list position.
     # import_media() can skip missing, duplicate, or failed
     # files, which shifts positions and silently breaks a
-    # zip()-based pairing without raising any error.
+    # zip()-based pairing without raising any error. Built once
+    # and shared across every day's timeline.
     # -----------------------------------------------------
+
+    imported_by_name = _build_imported_lookup(imported)
+
+    media_files = context.project_data.get("media_objects", [])
+
+    # -----------------------------------------------------
+    # Run the Planning Engine ONCE, project-wide - unchanged
+    # from before. Splitting the result per ride day happens
+    # below, after planning.
+    # -----------------------------------------------------
+
+    gap_compression = context.project_data.get("gap_compression")
+
+    if gap_compression is None:
+        gap_compression = load_gap_compression_settings()
+
+    if gap_compression.enabled:
+        print(
+            f"Gap Compression   : ENABLED (gaps over "
+            f"{gap_compression.gap_threshold_seconds:.0f}s "
+            f"compressed to "
+            f"{gap_compression.compressed_gap_seconds:.0f}s)"
+        )
+    else:
+        print("Gap Compression   : disabled")
+
+    enable_multicam_audio_sync = context.project_data.get(
+        "enable_multicam_audio_sync"
+    )
+
+    if enable_multicam_audio_sync is None:
+        enable_multicam_audio_sync = load_multicam_audio_sync_enabled()
+
+    print(
+        f"Multicam Audio Sync : "
+        f"{'ENABLED' if enable_multicam_audio_sync else 'disabled'}"
+    )
+
+    planning_service = TimelinePlanningService(
+        fps=project_fps,
+        gap_compression=gap_compression,
+        enable_multicam_audio_sync=enable_multicam_audio_sync,
+    )
+
+    result = planning_service.plan(media_files)
+
+    if not result.placements:
+        print("Planning Engine produced no placements.")
+        return None
+
+    print()
+    print(f"Ride days         : {result.statistics.ride_days}")
+    print(f"Scenes            : {result.statistics.scenes}")
+    print(f"Planning segments : {len(result.segments)}")
+    print(f"Placements        : {len(result.placements)}")
+
+    # -----------------------------------------------------
+    # Split into one rebased plan per ride day, and build each
+    # one as its own independent Resolve timeline.
+    # -----------------------------------------------------
+
+    day_plans = RideDayGrouper.group(result)
+
+    last_timeline = None
+
+    for day_plan in day_plans:
+
+        timeline_name = (
+            f"{base_timeline_name} {day_plan.timeline_name_suffix}"
+        )
+
+        print()
+        print("-" * 60)
+        print(f"Timeline : {timeline_name}")
+        print("-" * 60)
+
+        timeline = _find_or_create_timeline(
+            project, media_pool, timeline_name
+        )
+
+        project.SetCurrentTimeline(timeline)
+
+        _build_day_timeline(
+            timeline,
+            media_pool,
+            day_plan,
+            imported_by_name,
+            project_fps,
+        )
+
+        last_timeline = timeline
+
+    return last_timeline
+
+
+def _find_or_create_timeline(project, media_pool, timeline_name):
+    """
+    Finds an existing timeline with this exact name, or creates
+    a new empty one.
+    """
+
+    for index in range(1, project.GetTimelineCount() + 1):
+        existing = project.GetTimelineByIndex(index)
+        if existing and existing.GetName() == timeline_name:
+            print("Using existing timeline.")
+            return existing
+
+    timeline = media_pool.CreateEmptyTimeline(timeline_name)
+
+    if timeline is None:
+        raise RuntimeError(
+            f"Unable to create timeline '{timeline_name}'."
+        )
+
+    return timeline
+
+
+def _build_imported_lookup(imported):
+    """
+    Builds a {lowercased filename: Resolve clip} lookup from the
+    imported Resolve clips, warning about any clips that appear
+    to be internal Resolve duplicates (same underlying object,
+    or same underlying file path, requested under more than one
+    name).
+    """
 
     imported_by_name = {}
 
@@ -214,60 +344,26 @@ def create_timeline(context):
             print(f"  - {first_name}  <->  {second_name}")
             print(f"    File Path: {file_path}")
 
-    media_files = context.project_data.get("media_objects", [])
+    return imported_by_name
 
-    # -----------------------------------------------------
-    # Run the Planning Engine
-    # -----------------------------------------------------
 
-    gap_compression = context.project_data.get("gap_compression")
+def _build_day_timeline(
+    timeline,
+    media_pool,
+    day_plan,
+    imported_by_name,
+    project_fps,
+):
+    """
+    Builds ONE ride day's worth of tracks, clip placements, and
+    markers onto an already-found-or-created timeline.
 
-    if gap_compression is None:
-        gap_compression = load_gap_compression_settings()
-
-    if gap_compression.enabled:
-        print(
-            f"Gap Compression   : ENABLED (gaps over "
-            f"{gap_compression.gap_threshold_seconds:.0f}s "
-            f"compressed to "
-            f"{gap_compression.compressed_gap_seconds:.0f}s)"
-        )
-    else:
-        print("Gap Compression   : disabled")
-
-    # ML-054 (2026-07-19): read from project_data if the caller
-    # supplied it explicitly, otherwise fall back to
-    # config/settings.json directly - same pattern as
-    # gap_compression above. OFF by default.
-    enable_multicam_audio_sync = context.project_data.get(
-        "enable_multicam_audio_sync"
-    )
-
-    if enable_multicam_audio_sync is None:
-        enable_multicam_audio_sync = load_multicam_audio_sync_enabled()
-
-    print(
-        f"Multicam Audio Sync : "
-        f"{'ENABLED' if enable_multicam_audio_sync else 'disabled'}"
-    )
-
-    planning_service = TimelinePlanningService(
-        fps=project_fps,
-        gap_compression=gap_compression,
-        enable_multicam_audio_sync=enable_multicam_audio_sync,
-    )
-
-    result = planning_service.plan(media_files)
-
-    if not result.placements:
-        print("Planning Engine produced no placements.")
-        return timeline
-
-    print()
-    print(f"Ride days         : {result.statistics.ride_days}")
-    print(f"Scenes            : {result.statistics.scenes}")
-    print(f"Planning segments : {len(result.segments)}")
-    print(f"Placements        : {len(result.placements)}")
+    day_plan.placements/markers are already rebased relative to
+    this day's own earliest clip (see RideDayGrouper) -
+    everything here just executes that plan against the real
+    Resolve API, exactly as the single-timeline builder always
+    did.
+    """
 
     # -----------------------------------------------------
     # Ensure enough video tracks exist, named per camera
@@ -275,7 +371,7 @@ def create_timeline(context):
 
     track_names: dict[int, str] = {}
 
-    for placement in result.placements:
+    for placement in day_plan.placements:
         track_names.setdefault(
             placement.track_index,
             placement.camera_name,
@@ -295,16 +391,16 @@ def create_timeline(context):
         )
 
     # -----------------------------------------------------
-    # ML-054 Step 2c: ensure a named track also exists for
-    # any camera that ONLY has unsynced clips (no successful
-    # placement at all for that camera). These clips never
-    # reach AppendToTimeline, but still need a labeled home
-    # track ready for manual sync in Resolve.
+    # Ensure a named track also exists for any camera that ONLY
+    # has unsynced clips (no successful placement at all for
+    # that camera, on this day). These clips never reach
+    # AppendToTimeline, but still need a labeled home track
+    # ready for manual sync in Resolve.
     # -----------------------------------------------------
 
     unsynced_by_camera: dict[str, list] = {}
 
-    for unsynced_clip in result.unsynced_clips:
+    for unsynced_clip in day_plan.unsynced_clips:
         unsynced_by_camera.setdefault(
             unsynced_clip.camera_name, []
         ).append(unsynced_clip)
@@ -335,11 +431,11 @@ def create_timeline(context):
         camera_to_track_index[camera_name] = max_track
 
     # -----------------------------------------------------
-    # ML-054 (2026-07-19): create a matching, identically-named
-    # AUDIO track for every camera video track above (both the
-    # normal per-camera tracks and the new placeholder tracks),
-    # so a clip's audio has an obvious, correctly-labeled home
-    # too - not just its video.
+    # Create a matching, identically-named AUDIO track for every
+    # camera video track above (both the normal per-camera
+    # tracks and the placeholder tracks), so a clip's audio has
+    # an obvious, correctly-labeled home too - not just its
+    # video.
     # -----------------------------------------------------
 
     max_audio_track = len(track_names)
@@ -358,7 +454,8 @@ def create_timeline(context):
         )
 
     # -----------------------------------------------------
-    # Build the AppendToTimeline batch from TimelinePlacements
+    # Build the AppendToTimeline batch from this day's
+    # TimelinePlacements
     # -----------------------------------------------------
 
     print()
@@ -367,7 +464,7 @@ def create_timeline(context):
     zero_duration_clips = []
 
     for placement in sorted(
-        result.placements,
+        day_plan.placements,
         key=lambda p: (p.track_index, p.record_frame),
     ):
 
@@ -408,7 +505,7 @@ def create_timeline(context):
     skipped = []
 
     for placement in sorted(
-        result.placements,
+        day_plan.placements,
         key=lambda p: (p.track_index, p.record_frame),
     ):
 
@@ -439,7 +536,7 @@ def create_timeline(context):
 
     if not append_items:
         print("No placements could be matched to imported clips.")
-        return timeline
+        return
 
     # -----------------------------------------------------
     # Append per-track, not as one mixed batch.
@@ -511,15 +608,15 @@ def create_timeline(context):
     )
 
     # -----------------------------------------------------
-    # ML-054 Step 2c: report every clip that could not be
-    # automatically synced/placed - grouped by camera, with
-    # original filenames and the reason, so nothing is
-    # silently missing from the timeline. No timeline markers
-    # are created for these - the named empty track plus this
-    # report is the complete signal.
+    # Report every clip that could not be automatically
+    # synced/placed on this day - grouped by camera, with
+    # original filenames and the reason, so nothing is silently
+    # missing from the timeline. No timeline markers are created
+    # for these - the named empty track plus this report is the
+    # complete signal.
     # -----------------------------------------------------
 
-    if result.unsynced_clips:
+    if day_plan.unsynced_clips:
 
         print()
         print("=" * 60)
@@ -551,15 +648,16 @@ def create_timeline(context):
     _verify_placements(timeline, append_items)
 
     # -----------------------------------------------------
-    # Write ride-day and multicam markers onto the timeline
+    # Write this day's ride-day/scene/multicam markers onto its
+    # own timeline
     # -----------------------------------------------------
 
-    if result.markers:
+    if day_plan.markers:
 
         markers_added = 0
         markers_failed = []
 
-        for marker in result.markers:
+        for marker in day_plan.markers:
 
             added = timeline.AddMarker(
                 marker.frame,
@@ -575,15 +673,13 @@ def create_timeline(context):
                 markers_failed.append(marker.frame)
 
         print()
-        print(f"Markers added : {markers_added}/{len(result.markers)}")
+        print(f"Markers added : {markers_added}/{len(day_plan.markers)}")
 
         if markers_failed:
             print(
                 f"WARNING: {len(markers_failed)} marker(s) failed "
                 f"to add at frame(s): {markers_failed}"
             )
-
-    return timeline
 
 
 def _verify_placements(timeline, append_items):

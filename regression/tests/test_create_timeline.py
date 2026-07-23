@@ -103,9 +103,10 @@ class FakeTimeline:
 
 class FakeProject:
 
-    def __init__(self):
+    def __init__(self, timeline_fps="24"):
         self.timelines = []
         self.current_timeline = None
+        self.timeline_fps = timeline_fps
 
     def GetTimelineCount(self):
         return len(self.timelines)
@@ -115,6 +116,11 @@ class FakeProject:
 
     def SetCurrentTimeline(self, timeline):
         self.current_timeline = timeline
+
+    def GetSetting(self, key):
+        if key == "timelineFrameRate":
+            return self.timeline_fps
+        return None
 
 
 class FakeTimelineItem:
@@ -135,10 +141,12 @@ class FakeMediaPool:
     def __init__(self):
         self.append_calls = []
         self.timeline = None
+        self.created_timelines = []
 
     def CreateEmptyTimeline(self, name):
         timeline = FakeTimeline(name)
         self.timeline = timeline
+        self.created_timelines.append(timeline)
         return timeline
 
     def AppendToTimeline(self, items):

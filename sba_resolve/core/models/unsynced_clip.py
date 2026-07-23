@@ -31,3 +31,9 @@ class UnsyncedClip:
     clip_name: str
 
     reason: str
+
+    # Which ride day this clip belongs to. Populated by
+    # TimelinePlanningService from the originating placement.
+    # Used at the Resolve Builder boundary (create_timeline.py)
+    # to group unsynced clips onto the correct per-day timeline.
+    ride_day: int = 0
