@@ -1,3 +1,14 @@
+# Historical: Master Development Roadmap v1.0
+
+**Status: superseded and retired (2026-07-23).** This document is kept for
+history only. It was an early ChatGPT-era planning document (tagged
+`v0.4.0-alpha`, `Sprint ML-011`), and no longer reflects the current
+state of the project. For current status and milestones, see
+`docs/Roadmap.md`. For architecture, see `docs/Architecture.md`. For
+detailed release history, see the root `CHANGELOG.md`.
+
+---
+
 I think the roadmap is the right idea, but I'm going to improve it in one important way.
 
 Instead of being a chat summary, it will become a **software engineering specification**. It will be version-controlled alongside the code and updated after every completed task.

@@ -1,6 +1,25 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+## 2026-07-23
+
+### Fixed
+- `pyproject.toml` package version aligned to `2.1.0` (previously `0.1.0`,
+  out of sync with README/Architecture.md).
+- `requirements.txt` converted from UTF-16LE (with a BOM and NUL bytes,
+  likely from Windows tooling) to plain UTF-8 - same package list, just
+  a clean encoding.
+- `docs/changelog.md` was empty; now redirects readers to the real,
+  detailed history in the root `CHANGELOG.md`.
+- Retired the stale `docs/Master_Development_Roadmap.md` (an early
+  ChatGPT-era planning doc, tagged v0.4.0-alpha / Sprint ML-011) to
+  `docs/ADR/historical-master-development-roadmap-v1.md`, clearly
+  labelled as historical.
+- Refreshed `docs/Roadmap.md` end to end: each milestone now reflects
+  actually-verified current status instead of stale claims, the
+  one-timeline-per-ride-day gap is called out as the top open item, and
+  a "Current Near-Term Priorities" section tracks the active punch list.
+
 ## 2026-07-22
 
 ### Added
