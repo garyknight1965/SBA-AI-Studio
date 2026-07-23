@@ -78,6 +78,14 @@ mechanism - no special "nest a timeline" API is needed. No
 recordFrame is supplied for these appends; Resolve places each
 one at the end of the track's existing content in call order,
 so no frame math is guessed for the Master's assembly.
+
+RES-006F.7c (2026-07-23) points the Media Pool's current folder
+at the root bin (Resolve's default root bin is named "Master")
+before creating any timeline - CreateEmptyTimeline() otherwise
+creates new timelines wherever the current folder happens to be,
+which the earlier bin-sync step normally leaves deep inside a
+Day/Camera bin, burying every timeline inside a random camera's
+media bin instead of the clean, predictable root location.
 """
 
 from __future__ import annotations
@@ -405,6 +413,15 @@ def _find_or_create_timeline(project, media_pool, timeline_name):
     """
     Finds an existing timeline with this exact name, or creates
     a new empty one.
+
+    New timelines are created with the Media Pool's current
+    folder pointed at the root bin (Resolve's default root bin
+    is named "Master") first - CreateEmptyTimeline() otherwise
+    creates the new timeline wherever the current folder happens
+    to be, which is normally left deep inside a Day/Camera bin
+    by the earlier bin-sync step, burying every timeline inside
+    a random camera's media bin instead of a clean, predictable
+    top-level location.
     """
 
     for index in range(1, project.GetTimelineCount() + 1):
@@ -412,6 +429,11 @@ def _find_or_create_timeline(project, media_pool, timeline_name):
         if existing and existing.GetName() == timeline_name:
             print("Using existing timeline.")
             return existing
+
+    root_folder = media_pool.GetRootFolder()
+
+    if root_folder is not None:
+        media_pool.SetCurrentFolder(root_folder)
 
     timeline = media_pool.CreateEmptyTimeline(timeline_name)
 

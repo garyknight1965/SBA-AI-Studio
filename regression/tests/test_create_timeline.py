@@ -193,9 +193,16 @@ class FakeMediaPool:
         self.timeline = None
         self.created_timelines = []
         self.root_folder = FakeFolder()
+        self.current_folder = self.root_folder
+        self.set_current_folder_calls = []
 
     def GetRootFolder(self):
         return self.root_folder
+
+    def SetCurrentFolder(self, folder):
+        self.current_folder = folder
+        self.set_current_folder_calls.append(folder)
+        return True
 
     def CreateEmptyTimeline(self, name):
         timeline = FakeTimeline(name)

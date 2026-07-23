@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+## 2026-07-23 (ML-057 follow-up 2: timelines were landing in the wrong bin)
+
+### Fixed
+- Every timeline `create_timeline()` builds (each ride day's, and the
+  assembled Master) now points the Media Pool's current folder at the
+  ROOT bin before calling `CreateEmptyTimeline()`. Previously, new
+  timelines landed wherever the current folder happened to be left by
+  the earlier bin-sync step - in practice, buried deep inside a random
+  Day/Camera media bin (e.g. "Day 4/DJI Flip") instead of the clean,
+  predictable top-level bin (Resolve's root bin is named "Master" by
+  default) - exactly what Gary found in a real project.
+- `test_ride_day_timelines.py` extended to prove this: every timeline
+  created in that test must be preceded by a `SetCurrentFolder()` call
+  targeting the root folder, not whatever bin was previously active.
+
 ## 2026-07-23 (ML-057 follow-up: Master timeline assembly)
 
 ### Added

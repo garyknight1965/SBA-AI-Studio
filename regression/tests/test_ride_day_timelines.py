@@ -357,3 +357,32 @@ class RideDayTimelinesRegressionTest(BaseRegressionTest):
                 "Expected the project's current timeline to end "
                 "on the assembled Master timeline."
             )
+
+        # --------------------------------------------------
+        # 7. Every timeline (both ride days and the Master) must
+        #    be created with the Media Pool's current folder
+        #    pointed at the ROOT bin first - otherwise
+        #    CreateEmptyTimeline() would create them wherever a
+        #    prior bin-sync operation left the current folder
+        #    (e.g. deep inside a Day/Camera bin), which is
+        #    exactly the real bug Gary found (timelines buried
+        #    inside "Day 4/DJI Flip" instead of the top-level
+        #    Master bin).
+        # --------------------------------------------------
+
+        if len(media_pool.set_current_folder_calls) != 3:
+            raise RuntimeError(
+                f"Expected SetCurrentFolder(root) to be called "
+                f"once per timeline created (3: 2 days + "
+                f"Master), got "
+                f"{len(media_pool.set_current_folder_calls)}."
+            )
+
+        if any(
+            folder is not media_pool.root_folder
+            for folder in media_pool.set_current_folder_calls
+        ):
+            raise RuntimeError(
+                "Expected every SetCurrentFolder() call to target "
+                "the root folder, not some other bin."
+            )
