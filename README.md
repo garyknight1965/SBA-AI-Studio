@@ -16,9 +16,7 @@ The Planning Engine decides *what should happen*. The Resolve Builder executes i
 
 # Current Status
 
-Version
-
-2.1.0
+v2.4.0: Groq migration, ML-066 transcript extrapolation, ML-067 max_tokens/reasoning_effort fixes, dead-code cleanup
 
 Current Milestone
 
