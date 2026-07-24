@@ -21,26 +21,9 @@ from sba_resolve.core.services.app_settings import (
     load_gap_compression_settings,
     load_openrouteservice_api_key,
     load_theme,
+    load_thumbnail_logo_path,
 )
 from sba_resolve.core.services.day_detector import DayDetector
-from sba_resolve.core.services.chapter_title_card_inserter import (
-    NoChaptersFoundError,
-    NoTemplateError,
-    insert_chapter_title_cards,
-)
-from sba_resolve.core.services.cut_list_exporter import (
-    DEFAULT_HANDLE_SECONDS,
-    build_cut_list,
-    format_cut_list,
-)
-from sba_resolve.core.services.resolve_transcript_parser import (
-    ResolveTranscriptParser,
-)
-from sba_resolve.resolve_graphic_inserter import (
-    AssetNotFoundError,
-    GraphicPlacementError,
-    ResolveConnectionError,
-)
 from ui.layout.dock_manager import DockManager
 from ui.theme import apply_theme
 from ui.widgets.map_widget import MapWidget
@@ -48,6 +31,7 @@ from ui.windows.settings_dialog import SettingsDialog
 from ui.workers.intelliscript_worker import IntelliScriptWorker
 from ui.workers.location_grouping_worker import LocationGroupingWorker
 from ui.workers.route_worker import RouteWorker
+from ui.workers.thumbnail_suggestion_worker import ThumbnailSuggestionWorker
 from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
 from sba_resolve.connector import ResolveConnector
 
@@ -119,6 +103,9 @@ class MainWindow(QMainWindow):
         self.docks.youtube_panel.generate_requested.connect(
             self.generate_youtube_metadata
         )
+        self.docks.thumbnail_panel.suggest_requested.connect(
+            self.suggest_thumbnail_frames
+        )
         self.docks.transcript_panel.load_requested.connect(
             self.load_transcript
         )
@@ -135,6 +122,7 @@ class MainWindow(QMainWindow):
         # Held here so the QThread isn't garbage-collected mid-run.
         self._youtube_worker = None
         self._intelliscript_worker = None
+        self._thumbnail_worker = None
         self._location_worker = None
         self._route_worker = None
 
@@ -167,16 +155,6 @@ class MainWindow(QMainWindow):
         file_menu.addAction(
             "Generate YouTube Metadata", self.generate_youtube_metadata
         )
-        # ML-055: chapter title cards, built from whatever chapter
-        # lines are currently in the YouTube Metadata description
-        # field -- deliberately separate from "Generate YouTube
-        # Metadata" above, since Gary may edit that text by hand
-        # before placing the cards, and this should only ever act on
-        # exactly what's on screen, never regenerate it.
-        file_menu.addAction(
-            "Add Chapter Title Cards to Timeline",
-            self.add_chapter_title_cards,
-        )
         file_menu.addSeparator()
         # ML-053: combined per Gary's UI simplification request -
         # was two separate menu items (Load Transcript..., then
@@ -189,17 +167,6 @@ class MainWindow(QMainWindow):
         )
         file_menu.addAction(
             "Save IntelliScript Script...", self.save_intelliscript_script
-        )
-        # Fix for Gary's real complaint (2026-07-20): manually cutting
-        # using IntelliScript's exact segment timecodes was clipping
-        # word start/ends, since those timecodes are Resolve's own
-        # transcript-export boundaries with zero padding. This exports
-        # a handle-adjusted (+/- 0.4s) cut list instead, as a separate
-        # plain-text reference - deliberately not the same action as
-        # Save IntelliScript Script, since that's the read-aloud script
-        # text and this is cutting timecodes.
-        file_menu.addAction(
-            "Export Cut List...", self.export_cut_list
         )
         file_menu.addSeparator()
         file_menu.addAction("Group by Location", self.generate_locations)
@@ -618,6 +585,14 @@ class MainWindow(QMainWindow):
         self.docks.youtube_panel.set_generating(False)
         self.docks.youtube_panel.set_metadata(metadata)
 
+        # ML-061: feed the AI-suggested thumbnail text through to the
+        # Thumbnail panel too - only pre-fills if Gary hasn't already
+        # typed something there himself (see set_suggested_text()).
+        if metadata.get("thumbnail_text"):
+            self.docks.thumbnail_panel.set_suggested_text(
+                metadata["thumbnail_text"]
+            )
+
         if metadata.get("parse_error"):
             self.statusBar().showMessage(
                 "YouTube metadata generated, but the model's "
@@ -632,147 +607,64 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("YouTube metadata generation failed.")
         QMessageBox.critical(self, "YouTube Metadata Error", message)
 
-    def add_chapter_title_cards(self):
+    def suggest_thumbnail_frames(self):
         """
-        ML-055. Reads whatever is currently in the YouTube Metadata
-        description field (NOT a fresh generation - exactly what's on
-        screen, including any hand-edits Gary has made) and places one
-        Fusion text title card per chapter onto the shared "AI Chapter
-        Title Cards" track, via the confirmed-safe AppendToTimeline +
-        ImportFusionComp mechanism (see resolve_graphic_inserter.py,
-        GraphicInserter._insert_templated_text -- Candidate B,
-        CONFIRMED 2026-07-20 on Gary's real Resolve setup).
-
-        Deliberately separate from generate_youtube_metadata() above -
-        this never regenerates the description, it only reads whatever
-        text is already sitting in the panel right now.
-
-        Runs synchronously (no worker thread) since this is a direct,
-        short Resolve scripting call, not a slow model call - matching
-        import_to_resolve()'s pattern, not generate_youtube_metadata()'s.
-
-        Every failure path shows a clear message box rather than
-        failing silently, per Gary's rules - a partially-placed batch
-        (if a later chapter fails) is safe (additive-only, per
-        resolve_graphic_inserter.py's design constraints) but should
-        never be silent.
+        ML-061: pulls a handful of candidate still frames from this
+        project's own footage on a background thread (video decoding
+        can take a moment), so Gary can pick one to build a real
+        thumbnail from - never an AI guess at "the best" frame.
         """
 
-        description_text = self.docks.youtube_panel.description_field.toPlainText()
-
-        try:
-            placed_names = insert_chapter_title_cards(description_text)
-        except NoTemplateError as exc:
-            QMessageBox.warning(self, "No Template Found", str(exc))
-            return
-        except NoChaptersFoundError as exc:
-            QMessageBox.information(self, "No Chapters Found", str(exc))
-            return
-        except (ResolveConnectionError, AssetNotFoundError, GraphicPlacementError) as exc:
-            QMessageBox.critical(self, "Chapter Title Cards Error", str(exc))
-            return
-
-        self.statusBar().showMessage(
-            f"Placed {len(placed_names)} chapter title card(s) on "
-            f"'AI Chapter Title Cards'."
-        )
-        QMessageBox.information(
-            self,
-            "Chapter Title Cards Placed",
-            f"Placed {len(placed_names)} chapter title card(s):\n\n"
-            + "\n".join(f"  - {name}" for name in placed_names),
-        )
-
-    def export_cut_list(self):
-        """
-        Fix for Gary's real complaint (2026-07-20): manually cutting
-        using IntelliScript's exact segment timecodes was clipping
-        word start/ends, since those timecodes are Resolve's own
-        transcript-export boundaries, passed through completely
-        unmodified with zero built-in handle/padding. See
-        sba_resolve/core/services/cut_list_exporter.py.
-
-        Re-parses the currently loaded transcript text (cheap,
-        deterministic) rather than requiring IntelliScriptWorker's
-        result shape to change - all_segments isn't otherwise kept on
-        self. Requires a real fps from scanned media, since Resolve's
-        HH:MM:SS:FF timecodes need a frame rate to convert to/from
-        seconds accurately - refuses rather than guessing a default
-        fps if none is available.
-        """
-
-        if not self._intelliscript_result or self._intelliscript_result.get(
-            "parse_error"
+        if (
+            not getattr(self.workspace, "media", None)
+            or self.workspace.is_empty
         ):
             QMessageBox.information(
                 self,
-                "Nothing to export",
-                "Generate an IntelliScript before exporting a cut list.",
+                "Nothing to suggest frames from",
+                "Scan the project before suggesting thumbnail frames.",
             )
             return
 
-        if not self._loaded_transcript_text:
+        if self._thumbnail_worker is not None and (
+            self._thumbnail_worker.isRunning()
+        ):
             QMessageBox.information(
                 self,
-                "Nothing to export",
-                "No transcript is currently loaded.",
+                "Already suggesting frames",
+                "A thumbnail frame suggestion request is already "
+                "in progress.",
             )
             return
 
-        fps = next(
-            (
-                m.fps
-                for m in getattr(self.workspace, "media", [])
-                if getattr(m, "fps", 0.0)
-            ),
-            0.0,
+        self.docks.thumbnail_panel.set_logo_path(load_thumbnail_logo_path())
+        self.docks.thumbnail_panel.set_generating(True)
+        self.statusBar().showMessage("Suggesting thumbnail frames...")
+
+        self._thumbnail_worker = ThumbnailSuggestionWorker(
+            media_list=list(self.workspace.media),
         )
-        if not fps:
-            QMessageBox.warning(
-                self,
-                "No Frame Rate Found",
-                "Could not find a frame rate from the scanned media - "
-                "scan the project first so a real fps is available "
-                "for accurate timecode math.",
-            )
-            return
-
-        all_segments = ResolveTranscriptParser().parse(
-            self._loaded_transcript_text
+        self._thumbnail_worker.succeeded.connect(
+            self._on_thumbnail_suggestion_succeeded
         )
-        decisions = self._intelliscript_result.get("decisions", {})
+        self._thumbnail_worker.failed.connect(
+            self._on_thumbnail_suggestion_failed
+        )
+        self._thumbnail_worker.start()
 
-        entries = build_cut_list(all_segments, decisions, fps)
-
-        if not entries:
-            QMessageBox.information(
-                self,
-                "Nothing to export",
-                "No kept segments were found to build a cut list from.",
-            )
-            return
-
-        text = format_cut_list(entries, DEFAULT_HANDLE_SECONDS)
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Cut List",
-            "",
-            "Text Files (*.txt);;All Files (*)",
+    def _on_thumbnail_suggestion_succeeded(self, candidates: list):
+        self.docks.thumbnail_panel.set_generating(False)
+        self.docks.thumbnail_panel.set_candidates(candidates)
+        self.statusBar().showMessage(
+            f"{len(candidates)} thumbnail frame(s) suggested - pick "
+            f"one to preview."
         )
 
-        if not path:
-            return
-
-        try:
-            Path(path).write_text(text, encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(
-                self, "Could Not Save Cut List", str(exc)
-            )
-            return
-
-        self.statusBar().showMessage(f"Cut list saved: {Path(path).name}")
+    def _on_thumbnail_suggestion_failed(self, message: str):
+        self.docks.thumbnail_panel.set_generating(False)
+        self.docks.thumbnail_panel.set_error(message)
+        self.statusBar().showMessage("Thumbnail frame suggestion failed.")
+        QMessageBox.critical(self, "Thumbnail Error", message)
 
     def load_transcript(self):
         """

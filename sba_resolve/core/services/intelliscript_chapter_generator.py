@@ -2,8 +2,8 @@
 ============================================================
 SBA AI Studio
 IntelliScript Chapter Generator
-Version : 1.0.0
-Sprint  : ML-052
+Version : 1.1.0
+Sprint  : ML-052 / ML-068 (AI provider wiring fix)
 ============================================================
 
 Generates YouTube-style chapter markers from IntelliScript's
@@ -22,7 +22,7 @@ could never produce.
 
 This also adds something IntelliScript's own editorial pass never
 does: a short SUBJECT/topic label per paragraph (e.g. "Tiger 900
-Build Quality", "Tyre Review"), via one additional Ollama call
+Build Quality", "Tyre Review"), via one additional AI call
 that reads each paragraph's already-assembled text. Like every
 other AI step in this app, it is not allowed to invent facts -
 it may only describe/summarize what the paragraph's own text
@@ -36,6 +36,17 @@ ChapterGenerator's own checks):
     - At least 3 chapters are required for YouTube to display
       them at all.
     - Each chapter must be at least 10 seconds long.
+
+ML-068 (2026-07-24, bug fix): this generator previously imported
+OllamaClient directly and defaulted to a bare OllamaClient() with
+no model argument whenever no client was passed in - which
+silently ignored config/settings.json's "ai_provider" and
+"ollama_model" settings entirely (falling back to OllamaClient's
+own hardcoded "llama3.2" default no matter what Settings said).
+Same bug, same fix as youtube_metadata_generator.py: defaults to
+get_ai_provider() instead. The constructor parameter is
+deliberately still named "ollama_client" (not renamed) for
+regression-test backward compat.
 """
 
 from __future__ import annotations
@@ -44,11 +55,12 @@ import json
 import re
 
 from sba_resolve.core.models.transcript_segment import TranscriptSegment
+from sba_resolve.core.services.ai_provider import AIProvider
+from sba_resolve.core.services.ai_provider_factory import get_ai_provider
 from sba_resolve.core.services.intelliscript_assembler import (
     AssembledParagraph,
     IntelliScriptAssembler,
 )
-from sba_resolve.core.services.ollama_client import OllamaClient
 from sba_resolve.core.services.timeline_fps import DEFAULT_PROJECT_FPS
 
 MIN_CHAPTER_SECONDS = 10.0
@@ -73,8 +85,8 @@ class IntelliScriptChapterGenerator:
     subject labels.
     """
 
-    def __init__(self, ollama_client: OllamaClient | None = None) -> None:
-        self.ollama_client = ollama_client or OllamaClient()
+    def __init__(self, ollama_client: AIProvider | None = None) -> None:
+        self.ollama_client = ollama_client or get_ai_provider()
         self.assembler = IntelliScriptAssembler()
 
     def generate(

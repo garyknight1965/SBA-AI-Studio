@@ -2,19 +2,31 @@
 ============================================================
 SBA AI Studio
 Editing Assistant Generator
-ML-030-002
-Version : 1.0.0 Alpha
+ML-030-002 / ML-068 (AI provider wiring fix)
+Version : 1.1.0 Alpha
 ============================================================
 
 Generates a narrative-structure suggestion ("story analysis")
 and concrete editing suggestions from ride reconstruction facts
-(per-day AND per-scene), via a local Ollama model.
+(per-day AND per-scene), via the app's configured AI provider
+(Ollama or Groq - see ai_provider_factory.py).
 
 Like YouTubeMetadataGenerator, this only knows what the facts
 tell it - it can't watch the footage, so it reasons about
 STRUCTURE (scene durations, camera counts, multicam windows,
 HERO13 audio availability), never about content (what actually
 happens in any scene).
+
+ML-068 (2026-07-24, bug fix): this generator previously imported
+OllamaClient directly and defaulted to a bare OllamaClient() with
+no model argument whenever no client was passed in - which
+silently ignored config/settings.json's "ai_provider" and
+"ollama_model" settings entirely (falling back to OllamaClient's
+own hardcoded "llama3.2" default no matter what Settings said).
+Same bug, same fix as youtube_metadata_generator.py: defaults to
+get_ai_provider() instead. The constructor parameter is
+deliberately still named "ollama_client" (not renamed) for
+regression-test backward compat.
 """
 
 from __future__ import annotations
@@ -22,7 +34,8 @@ from __future__ import annotations
 import json
 import re
 
-from sba_resolve.core.services.ollama_client import OllamaClient
+from sba_resolve.core.services.ai_provider import AIProvider
+from sba_resolve.core.services.ai_provider_factory import get_ai_provider
 
 GUIDANCE = """
 You are helping a motorcycle vlogger (channel: Scottish Biker
@@ -41,8 +54,8 @@ class EditingAssistantGenerator:
     reconstruction facts.
     """
 
-    def __init__(self, ollama_client: OllamaClient | None = None) -> None:
-        self.ollama_client = ollama_client or OllamaClient()
+    def __init__(self, ollama_client: AIProvider | None = None) -> None:
+        self.ollama_client = ollama_client or get_ai_provider()
 
     def generate(
         self,

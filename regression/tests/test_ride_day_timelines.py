@@ -386,3 +386,125 @@ class RideDayTimelinesRegressionTest(BaseRegressionTest):
                 "Expected every SetCurrentFolder() call to target "
                 "the root folder, not some other bin."
             )
+
+
+class SingleDaySkipsMasterRegressionTest(BaseRegressionTest):
+
+    name = "Single Day Skips Master Timeline (ML-057)"
+
+    category = "Resolve"
+
+    description = (
+        "Verify a one-ride-day project builds only that day's "
+        "own timeline and does NOT also assemble a redundant "
+        "Master timeline nesting just the one day."
+    )
+
+    def _make_media(
+        self, filename, camera_model, created, duration_seconds, fps=24.0
+    ):
+
+        from sba_resolve.core.models.camera_profile import (
+            CameraManufacturer,
+            CameraProfile,
+            CameraType,
+        )
+        from sba_resolve.core.models.media_file import MediaFile
+
+        profile = CameraProfile(
+            manufacturer=CameraManufacturer.GOPRO,
+            model=camera_model,
+            family="Hero",
+            camera_type=CameraType.ACTION,
+            confidence=100,
+            detection_method="Test Fixture",
+        )
+
+        return MediaFile(
+            filename=filename,
+            full_path=Path(f"/fake/{filename}"),
+            relative_path=Path(filename),
+            extension=".mp4",
+            size=1024,
+            camera_model=camera_model,
+            camera_profile=profile,
+            created=created,
+            duration=str(duration_seconds),
+            fps=fps,
+        )
+
+    def run(self) -> None:
+
+        from sba_resolve.commands.create_timeline import create_timeline
+
+        day1_start = datetime(2026, 7, 17, 9, 0, 0)
+
+        media_objects = [
+            self._make_media(
+                "friday_clip1.mp4", "HERO13 Black", day1_start, 60
+            ),
+        ]
+
+        imported_items = [FakeClip("friday_clip1.mp4")]
+
+        project = FakeProject(timeline_fps="24")
+        media_pool = FakeMediaPool()
+
+        context = FakeContext(
+            project=project,
+            media_pool=media_pool,
+            project_data={
+                "project_name": "Friday 17",
+                "media_objects": media_objects,
+                "enable_multicam_audio_sync": True,
+            },
+            imported_items=imported_items,
+        )
+
+        timeline = create_timeline(context)
+
+        if timeline is None:
+            raise RuntimeError("create_timeline() returned None.")
+
+        # --------------------------------------------------
+        # Exactly ONE timeline should exist - the day's own -
+        # no separate Master timeline nesting just that one day.
+        # --------------------------------------------------
+
+        if len(media_pool.created_timelines) != 1:
+            raise RuntimeError(
+                f"Expected exactly 1 timeline for a one-day "
+                f"project (no redundant Master), got "
+                f"{len(media_pool.created_timelines)}: "
+                f"{[t.GetName() for t in media_pool.created_timelines]!r}"
+            )
+
+        day_timeline = media_pool.created_timelines[0]
+
+        if day_timeline.GetName() != "Friday 17 Day 1 - 2026-07-17":
+            raise RuntimeError(
+                f"Expected the single timeline named "
+                f"'Friday 17 Day 1 - 2026-07-17', got "
+                f"{day_timeline.GetName()!r}."
+            )
+
+        if "Master" in day_timeline.GetName():
+            raise RuntimeError(
+                "The one-day project's only timeline should not "
+                f"be named as a Master timeline, got "
+                f"{day_timeline.GetName()!r}."
+            )
+
+        if timeline is not day_timeline:
+            raise RuntimeError(
+                "Expected create_timeline() to return the day's "
+                "own timeline directly when there's only one "
+                "ride day."
+            )
+
+        if project.current_timeline is not day_timeline:
+            raise RuntimeError(
+                "Expected the project's current timeline to be "
+                "the day's own timeline (no Master was built to "
+                "switch to afterward)."
+            )

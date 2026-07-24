@@ -15,6 +15,11 @@ version bump):
   - tools/exiftool/  -> bundled ExifTool (see
     exiftool_engine.py v4.3, which looks for this at
     sys._MEIPASS/tools/exiftool/exiftool.exe when frozen)
+  - assets/fonts/    -> bundled Barlow Condensed ExtraBold font
+    for thumbnail text (ML-064, see thumbnail_generator.py's
+    _bundled_font_path(), which looks for this at
+    sys._MEIPASS/assets/fonts/BarlowCondensed-ExtraBold.ttf when
+    frozen)
   - PySide6/resources/            -> QtWebEngine .pak resource
     files (icudtl.dat, qtwebengine_resources*.pak)
   - PySide6/translations/         -> QtWebEngine locale .pak
@@ -46,6 +51,7 @@ PYSIDE6_DIR = PROJECT_ROOT / ".venv" / "Lib" / "site-packages" / "PySide6"
 
 datas = [
     (str(PROJECT_ROOT / "tools" / "exiftool"), "tools/exiftool"),
+    (str(PROJECT_ROOT / "assets" / "fonts"), "assets/fonts"),
     (str(PYSIDE6_DIR / "resources"), "PySide6/resources"),
     (str(PYSIDE6_DIR / "translations"), "PySide6/translations"),
     (

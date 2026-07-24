@@ -3,7 +3,7 @@
 SBA AI Studio
 Settings Dialog
 GUI-010
-Version : 1.4.0
+Version : 1.5.0
 ============================================================
 
 A real in-app Settings dialog, so config/settings.json's
@@ -44,9 +44,25 @@ everything except OK/Cancel now lives inside a QScrollArea, so the
 dialog is capped to a sane height (520x720) and any overflow
 scrolls - OK/Cancel stay on an outer layout, always visible,
 regardless of how many sections exist or how small the screen is.
+
+Version 1.5.0 (2026-07-24, ML-072) adds a "Camera LUTs" section -
+one field per camera manufacturer (GoPro/DJI/Insta360), applied
+automatically to Media Pool clips during timeline creation (see
+create_timeline.py's _apply_camera_luts() and
+app_settings.load_camera_luts()). Each field's "Browse..." button
+opens Resolve's own LUT folder by default and computes the value
+relative to it (see _lut_row()) - the stored value must match
+exactly what Resolve's own LUT browser shows, not an arbitrary
+filesystem path, so browsing from within that folder is the
+easiest way to get a value that will actually work. A blank field
+leaves that camera's clips untouched, same as before this setting
+existed.
 """
 
 from __future__ import annotations
+
+import os
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -70,6 +86,7 @@ from PySide6.QtWidgets import (
 
 from sba_resolve.core.services.app_settings import (
     load_ai_provider,
+    load_camera_luts,
     load_exiftool_path,
     load_gap_compression_settings,
     load_groq_api_key,
@@ -80,7 +97,9 @@ from sba_resolve.core.services.app_settings import (
     load_openrouteservice_api_key,
     load_resolve_module_path,
     load_theme,
+    load_thumbnail_logo_path,
     load_timeline_creation_enabled,
+    load_youtube_metadata_guidance,
     save_settings,
 )
 from ui.theme import apply_theme
@@ -175,6 +194,49 @@ class SettingsDialog(QDialog):
         layout.addWidget(resolve_group)
 
         # -----------------------------------------------------
+        # Camera LUTs section (ML-072, 2026-07-24)
+        # -----------------------------------------------------
+        # Applied automatically to Media Pool clips during timeline
+        # creation, per camera manufacturer - see
+        # create_timeline.py's _apply_camera_luts() and
+        # app_settings.load_camera_luts(). GoPro/DJI/Insta360
+        # footage is imported but never auto-placed onto any
+        # timeline (Gary drags it in manually later), so this has
+        # to be a Media Pool clip property, not a timeline LUT -
+        # already handled on the create_timeline.py side; this
+        # section is just where the three values get typed in.
+
+        camera_lut_group = QGroupBox("Camera LUTs")
+        camera_lut_form = QFormLayout()
+
+        camera_lut_form.addRow(QLabel(
+            "Applied automatically to each camera's clips when a "
+            "timeline is created. Leave blank to skip a camera.\n"
+            "Value must match exactly what Resolve's own LUT "
+            "browser shows - use \"Browse...\" to pick a .cube file "
+            "from Resolve's LUT folder and the matching value will "
+            "be filled in automatically."
+        ))
+
+        self.camera_lut_gopro_edit = QLineEdit()
+        camera_lut_form.addRow(
+            "GoPro:", self._lut_row(self.camera_lut_gopro_edit)
+        )
+
+        self.camera_lut_dji_edit = QLineEdit()
+        camera_lut_form.addRow(
+            "DJI:", self._lut_row(self.camera_lut_dji_edit)
+        )
+
+        self.camera_lut_insta360_edit = QLineEdit()
+        camera_lut_form.addRow(
+            "Insta360:", self._lut_row(self.camera_lut_insta360_edit)
+        )
+
+        camera_lut_group.setLayout(camera_lut_form)
+        layout.addWidget(camera_lut_group)
+
+        # -----------------------------------------------------
         # Gap Compression section
         # -----------------------------------------------------
 
@@ -265,6 +327,41 @@ class SettingsDialog(QDialog):
         layout.addWidget(prompt_group)
 
         # -----------------------------------------------------
+        # YouTube Metadata Prompt section (ML-058, 2026-07-23)
+        # -----------------------------------------------------
+        # Only the brand-voice/style guidance is editable here
+        # (channel tone, title/description style, the editing
+        # credit mention) - the mechanical parts of the prompt
+        # (day-by-day facts, anti-hallucination rules, JSON
+        # response-format instructions) stay fixed in
+        # youtube_metadata_generator.py, since loosening those
+        # could let the model invent facts or break parsing
+        # regardless of what Gary intended to change.
+
+        youtube_prompt_group = QGroupBox("YouTube Metadata Prompt")
+        youtube_prompt_layout = QVBoxLayout()
+
+        youtube_prompt_layout.addWidget(QLabel(
+            "Brand voice / style guidance sent to the AI - channel "
+            "tone, title/description style, editing credit mention:"
+        ))
+
+        self.youtube_metadata_guidance_edit = QTextEdit()
+        self.youtube_metadata_guidance_edit.setMinimumHeight(160)
+        youtube_prompt_layout.addWidget(
+            self.youtube_metadata_guidance_edit
+        )
+
+        youtube_reset_button = QPushButton("Reset to Default")
+        youtube_reset_button.clicked.connect(
+            self._reset_youtube_metadata_guidance
+        )
+        youtube_prompt_layout.addWidget(youtube_reset_button)
+
+        youtube_prompt_group.setLayout(youtube_prompt_layout)
+        layout.addWidget(youtube_prompt_group)
+
+        # -----------------------------------------------------
         # Map section
         # -----------------------------------------------------
         # Real road-following routing (2026-07-21). With no key set,
@@ -300,6 +397,26 @@ class SettingsDialog(QDialog):
         tools_group.setLayout(tools_form)
         layout.addWidget(tools_group)
 
+        # -----------------------------------------------------
+        # Thumbnail section (ML-061, 2026-07-23)
+        # -----------------------------------------------------
+
+        thumbnail_group = QGroupBox("Thumbnail")
+        thumbnail_form = QFormLayout()
+
+        self.thumbnail_logo_path_edit = QLineEdit()
+        thumbnail_form.addRow(
+            "Logo image (composited bottom-right):",
+            self._path_row(
+                self.thumbnail_logo_path_edit,
+                is_folder=False,
+                file_filter="Images (*.png *.jpg *.jpeg *.bmp)",
+            ),
+        )
+
+        thumbnail_group.setLayout(thumbnail_form)
+        layout.addWidget(thumbnail_group)
+
         # Push all sections to the top rather than spreading out to
         # fill the scroll area's height.
         layout.addStretch()
@@ -322,12 +439,18 @@ class SettingsDialog(QDialog):
 
         self._load_current_values()
 
-    def _path_row(self, line_edit: QLineEdit, is_folder: bool) -> QHBoxLayout:
+    def _path_row(
+        self,
+        line_edit: QLineEdit,
+        is_folder: bool,
+        file_filter: str | None = None,
+    ) -> QHBoxLayout:
         """
         Wraps a QLineEdit with a "Browse..." button that opens a
         file or folder picker and fills the field - returned as a
         layout so it can be dropped straight into a QFormLayout
-        row.
+        row. file_filter (e.g. "Images (*.png *.jpg *.jpeg)") is
+        only used for file pickers, not folder pickers.
         """
 
         row = QHBoxLayout()
@@ -342,10 +465,86 @@ class SettingsDialog(QDialog):
                 )
             else:
                 chosen, _ = QFileDialog.getOpenFileName(
-                    self, "Select File", line_edit.text()
+                    self,
+                    "Select File",
+                    line_edit.text(),
+                    file_filter or "",
                 )
             if chosen:
                 line_edit.setText(chosen)
+
+        browse_button.clicked.connect(_browse)
+        row.addWidget(browse_button)
+
+        return row
+
+    def _lut_row(self, line_edit: QLineEdit) -> QHBoxLayout:
+        """
+        Wraps a QLineEdit with a "Browse..." button for picking a
+        camera LUT file (ML-072). Unlike _path_row(), the value
+        this stores is NOT a filesystem path - Resolve's
+        MediaPoolItem.SetClipProperty("Input LUT", ...) expects the
+        value exactly as it appears in Resolve's own LUT
+        browser/dropdown, which is the LUT's path RELATIVE to
+        Resolve's LUT folder (e.g. "GoPro/HERO13_Look.cube"), not
+        an absolute filesystem path.
+
+        The browse dialog opens directly inside Resolve's LUT
+        folder by default, and the chosen file's path is converted
+        to be relative to that folder before being written into
+        the field - so browsing from inside that folder (or a
+        subfolder of it) produces a value that will actually work.
+
+        If the person picks a file OUTSIDE Resolve's LUT folder
+        (e.g. it hasn't been installed into Resolve yet), this
+        falls back to just the filename - which only works if that
+        exact file also happens to sit directly in Resolve's LUT
+        folder root. In that case the field is filled in but the
+        underlying LUT still needs to actually be moved/copied into
+        Resolve's LUT folder for the value to mean anything to
+        Resolve.
+        """
+
+        row = QHBoxLayout()
+        row.addWidget(line_edit)
+
+        browse_button = QPushButton("Browse...")
+
+        def _browse():
+
+            lut_root = (
+                Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+                / "Blackmagic Design"
+                / "DaVinci Resolve"
+                / "Support"
+                / "LUT"
+            )
+
+            start_dir = str(lut_root) if lut_root.exists() else (
+                line_edit.text()
+            )
+
+            chosen, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select LUT File",
+                start_dir,
+                "LUT files (*.cube *.3dl)",
+            )
+
+            if not chosen:
+                return
+
+            chosen_path = Path(chosen)
+
+            try:
+                relative = chosen_path.relative_to(lut_root)
+                value = str(relative).replace("\\", "/")
+            except ValueError:
+                # Not under Resolve's LUT folder - see docstring
+                # above for what this fallback means in practice.
+                value = chosen_path.name
+
+            line_edit.setText(value)
 
         browse_button.clicked.connect(_browse)
         row.addWidget(browse_button)
@@ -380,6 +579,20 @@ class SettingsDialog(QDialog):
             DEFAULT_INTELLISCRIPT_GUIDANCE
         )
 
+    def _reset_youtube_metadata_guidance(self):
+        """
+        Restores DEFAULT_YOUTUBE_METADATA_GUIDANCE into the text box -
+        does NOT save anything to disk by itself, same as any other
+        field here; only OK actually writes it.
+        """
+        from sba_resolve.core.services.app_settings import (
+            DEFAULT_YOUTUBE_METADATA_GUIDANCE,
+        )
+
+        self.youtube_metadata_guidance_edit.setPlainText(
+            DEFAULT_YOUTUBE_METADATA_GUIDANCE
+        )
+
     def _load_current_values(self):
 
         self.dark_theme_check.setChecked(load_theme() == "dark")
@@ -391,6 +604,13 @@ class SettingsDialog(QDialog):
             load_multicam_audio_sync_enabled()
         )
         self.resolve_module_path_edit.setText(load_resolve_module_path())
+
+        camera_luts = load_camera_luts()
+        self.camera_lut_gopro_edit.setText(camera_luts.get("GoPro", ""))
+        self.camera_lut_dji_edit.setText(camera_luts.get("DJI", ""))
+        self.camera_lut_insta360_edit.setText(
+            camera_luts.get("Insta360", "")
+        )
 
         gap_settings = load_gap_compression_settings()
         self.gap_enabled_check.setChecked(gap_settings.enabled)
@@ -414,11 +634,17 @@ class SettingsDialog(QDialog):
             load_intelliscript_guidance()
         )
 
+        self.youtube_metadata_guidance_edit.setPlainText(
+            load_youtube_metadata_guidance()
+        )
+
         self.openrouteservice_api_key_edit.setText(
             load_openrouteservice_api_key()
         )
 
         self.exiftool_path_edit.setText(load_exiftool_path())
+
+        self.thumbnail_logo_path_edit.setText(load_thumbnail_logo_path())
 
     def _on_accept(self):
 
@@ -435,6 +661,18 @@ class SettingsDialog(QDialog):
                 self.multicam_audio_sync_check.isChecked()
             ),
             "resolve_module_path": self.resolve_module_path_edit.text(),
+            "camera_luts": {
+                manufacturer: value
+                for manufacturer, value in (
+                    ("GoPro", self.camera_lut_gopro_edit.text().strip()),
+                    ("DJI", self.camera_lut_dji_edit.text().strip()),
+                    (
+                        "Insta360",
+                        self.camera_lut_insta360_edit.text().strip(),
+                    ),
+                )
+                if value
+            },
             "gap_compression": {
                 "enabled": self.gap_enabled_check.isChecked(),
                 "gap_threshold_seconds": self.gap_threshold_spin.value(),
@@ -455,10 +693,14 @@ class SettingsDialog(QDialog):
             "intelliscript_prompt_guidance": (
                 self.intelliscript_guidance_edit.toPlainText().strip()
             ),
+            "youtube_metadata_prompt_guidance": (
+                self.youtube_metadata_guidance_edit.toPlainText().strip()
+            ),
             "openrouteservice_api_key": (
                 self.openrouteservice_api_key_edit.text()
             ),
             "exiftool": self.exiftool_path_edit.text(),
+            "thumbnail_logo_path": self.thumbnail_logo_path_edit.text(),
         }
 
         save_settings(updates)

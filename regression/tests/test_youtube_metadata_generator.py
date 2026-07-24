@@ -2,8 +2,8 @@
 ============================================================
 SBA AI Studio
 YouTube Metadata Generator Regression Test
-ML-026 / ML-051 (chapter wiring)
-Version : 1.1.0
+ML-026 / ML-051 (chapter wiring) / ML-058 (editable guidance) / ML-059 (rich SEO output)
+Version : 1.3.0
 ============================================================
 
 Verifies YouTubeMetadataGenerator's response parsing (clean
@@ -17,6 +17,19 @@ when chapter_days is provided, and is cleanly absent when it
 isn't - including the parse_error case, where the appended text
 still needs to land somewhere useful (raw_response) rather than
 being silently dropped.
+
+Also verifies ML-058's editable guidance: the default brand-voice
+guidance (loaded via app_settings.load_youtube_metadata_guidance())
+instructs the model to naturally mention SBA AI Studio and DaVinci
+Resolve in the prompt itself - NOT as a deterministically-appended
+fixed line in the output - and a settings.json-configured override
+actually reaches the prompt.
+
+Also verifies ML-059's richer output schema: 5 title options
+("title" still returned as a single backward-compatible best pick),
+15 tags, a filename suggestion, a pinned comment, and thumbnail
+overlay text - all parsed correctly, and all cleanly None/empty on
+parse_error rather than raising or leaving stale data.
 """
 
 from __future__ import annotations
@@ -47,7 +60,8 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
         "Verify prompt construction and response parsing "
         "(clean JSON, JSON embedded in extra text, and "
         "non-JSON degrading gracefully) using a fake Ollama "
-        "client, plus ML-051's chapter-appending behavior."
+        "client, plus chapter-appending, editable guidance, "
+        "and the richer ML-059 output schema."
     )
 
     def run(self) -> None:
@@ -71,14 +85,32 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
         }
 
         # --------------------------------------------------
-        # 1. Clean JSON response.
+        # 1. Clean JSON response, full ML-059 schema.
         # --------------------------------------------------
 
         clean_json = json.dumps(
             {
-                "title": "Whithorn Castle Ride - Scottish Biker Abroad",
+                "titles": [
+                    "Whithorn Castle Ride - Scottish Biker Abroad",
+                    "Chasing History in Whithorn on Two Wheels",
+                    "A Scottish Biker's Whithorn Castle Detour",
+                    "Whithorn: Scotland's Hidden Castle Ride",
+                    "Motorcycle Touring Whithorn, Scotland",
+                ],
                 "description": "A day riding to Whithorn...",
-                "tags": ["motorcycle", "scotland", "whithorn"],
+                "tags": [
+                    "motorcycle", "scotland", "whithorn", "touring",
+                    "adventure biker", "gopro", "hero13", "castle",
+                    "scottish biker abroad", "motovlog", "road trip",
+                    "biker vlog", "scotland travel", "motorcycle tour",
+                    "whithorn castle",
+                ],
+                "filename_suggestion": "whithorn-castle-ride-day1.mp4",
+                "pinned_comment": (
+                    "Ever ridden to Whithorn? Drop your favourite "
+                    "Scottish castle route below!"
+                ),
+                "thumbnail_text": "WHITHORN CASTLE RIDE",
             }
         )
 
@@ -96,12 +128,37 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
 
         if result["title"] != "Whithorn Castle Ride - Scottish Biker Abroad":
             raise RuntimeError(
-                f"Unexpected title: {result['title']!r}"
+                f"Unexpected title (should be the first of "
+                f"'titles', for backward compat): {result['title']!r}"
             )
 
-        if result["tags"] != ["motorcycle", "scotland", "whithorn"]:
+        if len(result["titles"]) != 5:
             raise RuntimeError(
-                f"Unexpected tags: {result['tags']!r}"
+                f"Expected 5 title options, got "
+                f"{len(result['titles'])}: {result['titles']!r}"
+            )
+
+        if len(result["tags"]) != 15:
+            raise RuntimeError(
+                f"Expected 15 tags, got {len(result['tags'])}: "
+                f"{result['tags']!r}"
+            )
+
+        if result["filename_suggestion"] != "whithorn-castle-ride-day1.mp4":
+            raise RuntimeError(
+                f"Unexpected filename_suggestion: "
+                f"{result['filename_suggestion']!r}"
+            )
+
+        if "Whithorn" not in (result["pinned_comment"] or ""):
+            raise RuntimeError(
+                f"Unexpected pinned_comment: {result['pinned_comment']!r}"
+            )
+
+        if result["thumbnail_text"] != "WHITHORN CASTLE RIDE":
+            raise RuntimeError(
+                f"Unexpected thumbnail_text: "
+                f"{result['thumbnail_text']!r}"
             )
 
         # Prompt must actually include the real facts, not
@@ -142,7 +199,8 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
 
         # --------------------------------------------------
         # 3. Non-JSON response degrades to parse_error=True,
-        #    with the raw response preserved (nothing lost).
+        #    with the raw response preserved (nothing lost) and
+        #    every ML-059 field cleanly empty/None.
         # --------------------------------------------------
 
         generator3 = YouTubeMetadataGenerator(
@@ -170,6 +228,23 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
             raise RuntimeError(
                 "title should be None when parsing fails."
             )
+
+        if result3["titles"] != []:
+            raise RuntimeError(
+                f"titles should be an empty list when parsing "
+                f"fails, got {result3['titles']!r}."
+            )
+
+        for field in (
+            "filename_suggestion",
+            "pinned_comment",
+            "thumbnail_text",
+        ):
+            if result3[field] is not None:
+                raise RuntimeError(
+                    f"{field} should be None when parsing fails, "
+                    f"got {result3[field]!r}."
+                )
 
         # --------------------------------------------------
         # 4. A day with NO identified places must explicitly
@@ -317,27 +392,125 @@ class YouTubeMetadataGeneratorRegressionTest(BaseRegressionTest):
             )
 
         # --------------------------------------------------
-        # 8. ML-051: chapters must still be appended (to
-        #    raw_response) even when the model's own response
-        #    fails to parse - nothing should be silently lost.
+        # 8. ML-058: the DEFAULT guidance (loaded via
+        #    app_settings.load_youtube_metadata_guidance(), no
+        #    settings.json override) must be present in the
+        #    prompt sent to the model, including the instruction
+        #    to naturally mention SBA AI Studio and DaVinci
+        #    Resolve - NOT a deterministically-appended fixed
+        #    line in the output.
         # --------------------------------------------------
 
         generator8 = YouTubeMetadataGenerator(
+            ollama_client=FakeOllamaClient(clean_json)
+        )
+
+        result8_default = generator8.generate(
+            ride_summary, "12-05-2026 castle"
+        )
+
+        prompt8 = generator8.ollama_client.last_prompt
+
+        if "SBA AI Studio" not in prompt8:
+            raise RuntimeError(
+                "Expected the default guidance to instruct the "
+                "model to mention SBA AI Studio - not found in "
+                "the prompt."
+            )
+
+        if "DaVinci Resolve" not in prompt8:
+            raise RuntimeError(
+                "Expected the default guidance to instruct the "
+                "model to mention DaVinci Resolve - not found in "
+                "the prompt."
+            )
+
+        # The credit must NOT be deterministically appended to
+        # the description itself - it's purely a prompt
+        # instruction, so a fake model response that doesn't
+        # mention it should not have it added afterward.
+        if "SBA AI Studio" in (result8_default["description"] or ""):
+            raise RuntimeError(
+                "The editor credit should come from the model's "
+                "own response (per the prompt instruction), not "
+                "be deterministically appended in code."
+            )
+
+        # --------------------------------------------------
+        # 9. ML-058: a custom guidance override (as if saved via
+        #    Settings -> YouTube Metadata Prompt) must actually
+        #    reach the prompt, proving the editable-guidance
+        #    wiring works end to end.
+        # --------------------------------------------------
+
+        import tempfile
+        from pathlib import Path as _Path
+
+        custom_guidance = (
+            "CUSTOM TEST GUIDANCE - mention llamas in every title."
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+
+            settings_path = _Path(tmp_dir) / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {"youtube_metadata_prompt_guidance": custom_guidance}
+                ),
+                encoding="utf-8",
+            )
+
+            import sba_resolve.core.services.app_settings as app_settings_module
+
+            original_default_path = (
+                app_settings_module.DEFAULT_SETTINGS_PATH
+            )
+
+            app_settings_module.DEFAULT_SETTINGS_PATH = settings_path
+
+            try:
+                generator9 = YouTubeMetadataGenerator(
+                    ollama_client=FakeOllamaClient(clean_json)
+                )
+
+                generator9.generate(ride_summary, "12-05-2026 castle")
+
+                prompt9 = generator9.ollama_client.last_prompt
+
+                if custom_guidance not in prompt9:
+                    raise RuntimeError(
+                        "Expected a settings.json-configured custom "
+                        "guidance override to reach the prompt - "
+                        "the editable-guidance wiring may be broken."
+                    )
+
+            finally:
+                app_settings_module.DEFAULT_SETTINGS_PATH = (
+                    original_default_path
+                )
+
+        # --------------------------------------------------
+        # 10. ML-051: chapters must still be appended (to
+        #     raw_response) even when the model's own response
+        #     fails to parse - nothing should be silently lost.
+        # --------------------------------------------------
+
+        generator10 = YouTubeMetadataGenerator(
             ollama_client=FakeOllamaClient("I can't help with that.")
         )
 
-        result8 = generator8.generate(
+        result10 = generator10.generate(
             ride_summary,
             "12-05-2026 castle",
             chapter_days=chapter_days,
         )
 
-        if not result8["parse_error"]:
+        if not result10["parse_error"]:
             raise RuntimeError(
                 "This response should still fail to parse as JSON."
             )
 
-        if "Chapters" not in result8["raw_response"]:
+        if "Chapters" not in result10["raw_response"]:
             raise RuntimeError(
                 "Chapters should still be appended (to raw_response) "
                 "even when the model's response fails to parse."

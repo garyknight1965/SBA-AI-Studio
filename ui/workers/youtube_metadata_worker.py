@@ -3,7 +3,8 @@
 SBA AI Studio
 YouTube Metadata Worker
 ML-028-002 / ML-052 (IntelliScript-based chapter wiring)
-Version : 1.3.0 Alpha
+            / ML-066 (transcript extrapolation)
+Version : 1.4.0
 ============================================================
 
 Runs YouTube metadata generation (Planning Engine -> ride
@@ -33,6 +34,20 @@ Chapter generation (re-parsing the transcript + running
 IntelliScriptChapterGenerator) is wrapped in its own try/except so
 a failure here never blocks the actual title/description/tags
 from being returned - it just falls back to no chapters section.
+
+ML-066 (2026-07-23): this worker was already receiving
+raw_transcript_text and intelliscript_decisions as constructor
+args (for the chapters feature above), but was never forwarding
+them to YouTubeMetadataGenerator.generate() itself - so the
+model's actual title/description prompt never saw any real
+transcript content, only the deterministic chapters section did.
+Both are now also passed straight through to generate(), which
+extracts the KEPT segments and feeds them into the prompt as real
+spoken content to draw from. If either is None (same conditions
+as the chapters feature - no transcript loaded, or IntelliScript
+not yet generated), YouTubeMetadataGenerator falls back to its
+prior ride-summary-only behaviour automatically - no special
+handling needed here.
 
 Version 1.3.0 (Groq provider backlog item): YouTubeMetadataGenerator's
 default (get_ai_provider()) now reads Settings' AI Provider choice
@@ -108,6 +123,8 @@ class YouTubeMetadataWorker(QThread):
                 self.project_name,
                 self.extra_notes,
                 chapter_days=chapter_days,
+                raw_transcript_text=self.raw_transcript_text,
+                intelliscript_decisions=self.intelliscript_decisions,
             )
 
         except (OllamaError, GroqError) as exc:

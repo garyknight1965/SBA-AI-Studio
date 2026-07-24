@@ -3,7 +3,7 @@
 SBA AI Studio
 AI Provider Factory
 Backlog: Add Groq Provider Support (originally speced as Gemini)
-Version : 1.0.0
+Version : 1.1.0
 ============================================================
 
 The ONE place in the app that knows both AI backends exist. Every
@@ -13,6 +13,14 @@ calling get_ai_provider() instead of constructing OllamaClient()
 directly - this is what makes switching providers in Settings take
 effect immediately, with no restart and no other file needing to
 know which backend is active.
+
+Version 1.1.0 (2026-07-24, ML-071): passes
+load_ollama_fallback_model() through to OllamaClient so a timeout
+on the primary Ollama model (e.g. qwen3.6 running slowly on Gary's
+8GB-VRAM AMD card) automatically retries with a faster fallback
+model instead of failing the whole generation outright. Only
+affects the Ollama branch - Groq has its own separate timeout
+behaviour and isn't touched here.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from sba_resolve.core.services.app_settings import (
     load_ai_provider,
     load_groq_api_key,
     load_groq_model,
+    load_ollama_fallback_model,
     load_ollama_model,
 )
 from sba_resolve.core.services.groq_provider import GroqProvider
@@ -48,4 +57,7 @@ def get_ai_provider() -> AIProvider:
             model=load_groq_model(),
         )
 
-    return OllamaClient(model=load_ollama_model())
+    return OllamaClient(
+        model=load_ollama_model(),
+        fallback_model=load_ollama_fallback_model(),
+    )

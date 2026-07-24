@@ -3,13 +3,15 @@
 SBA AI Studio
 YouTube Metadata UI Regression Test
 ML-028
-Version : 1.0.0
+Version : 1.0.1
 ============================================================
 
 Verifies:
 - YouTubeMetadataWidget's set_metadata()/set_generating()/
   set_error()/clear() all update the right fields, including
-  the parse_error fallback (raw response shown, no crash).
+  the parse_error fallback (raw response shown, no crash), and
+  the ML-059 fields (other title options, suggested filename,
+  pinned comment, thumbnail text).
 - YouTubeMetadataWorker emits `succeeded` with the generated
   metadata on success, and `failed` with a clear message on
   error - tested by calling run() directly (bypassing
@@ -18,6 +20,15 @@ Verifies:
   instance.
 - DockManager creates and exposes the YouTube panel, and clears
   it on refresh (matching the Metadata panel's behaviour).
+
+Version 1.0.1 (2026-07-24): FakeGeneratorSuccess/FakeGeneratorFailure's
+generate() signatures updated to accept raw_transcript_text and
+intelliscript_decisions - ML-066 (2026-07-23) added these as
+keyword args to the real YouTubeMetadataWorker.run()'s call to
+generator.generate(), and the fakes here had fallen out of sync
+with that real signature, causing a silent TypeError that
+run()'s broad except Exception swallowed into a failed emission
+instead of succeeded.
 """
 
 from __future__ import annotations
@@ -81,8 +92,16 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
 
         clean_metadata = {
             "title": "Whithorn Castle Ride",
+            "titles": [
+                "Whithorn Castle Ride",
+                "Chasing History in Whithorn",
+                "A Scottish Biker's Whithorn Detour",
+            ],
             "description": "A day's ride to Whithorn.",
             "tags": ["motorcycle", "scotland"],
+            "filename_suggestion": "whithorn-castle-ride.mp4",
+            "pinned_comment": "Ever ridden to Whithorn? Let me know below!",
+            "thumbnail_text": "WHITHORN CASTLE",
             "raw_response": "...",
             "parse_error": False,
         }
@@ -108,12 +127,50 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
                 f"{widget.tags_field.text()!r}."
             )
 
-        # parse_error fallback: raw response shown, title/tags
-        # blanked rather than showing stale data.
+        # ML-059: the primary title (titles[0]) should NOT repeat
+        # in the "other options" box - only titles[1:].
+        expected_other_options = (
+            "Chasing History in Whithorn\n"
+            "A Scottish Biker's Whithorn Detour"
+        )
+
+        if widget.title_options_field.toPlainText() != expected_other_options:
+            raise RuntimeError(
+                f"Expected the other-options box to show titles[1:] "
+                f"only (one per line), got "
+                f"{widget.title_options_field.toPlainText()!r}."
+            )
+
+        if widget.filename_field.text() != "whithorn-castle-ride.mp4":
+            raise RuntimeError(
+                f"Expected filename field "
+                f"'whithorn-castle-ride.mp4', got "
+                f"{widget.filename_field.text()!r}."
+            )
+
+        if "Whithorn" not in widget.pinned_comment_field.toPlainText():
+            raise RuntimeError(
+                f"Expected pinned comment field to show the "
+                f"generated comment, got "
+                f"{widget.pinned_comment_field.toPlainText()!r}."
+            )
+
+        if widget.thumbnail_text_field.text() != "WHITHORN CASTLE":
+            raise RuntimeError(
+                f"Expected thumbnail text field 'WHITHORN CASTLE', "
+                f"got {widget.thumbnail_text_field.text()!r}."
+            )
+
+        # parse_error fallback: raw response shown, every other
+        # field blanked rather than showing stale data.
         parse_error_metadata = {
             "title": None,
+            "titles": [],
             "description": None,
             "tags": [],
+            "filename_suggestion": None,
+            "pinned_comment": None,
+            "thumbnail_text": None,
             "raw_response": "I can't help with that.",
             "parse_error": True,
         }
@@ -135,6 +192,18 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
                 f"{widget.title_field.text()!r}."
             )
 
+        if (
+            widget.title_options_field.toPlainText() != ""
+            or widget.filename_field.text() != ""
+            or widget.pinned_comment_field.toPlainText() != ""
+            or widget.thumbnail_text_field.text() != ""
+        ):
+            raise RuntimeError(
+                "All ML-059 fields (title options, filename, "
+                "pinned comment, thumbnail text) should be "
+                "cleared on parse_error, not show stale data."
+            )
+
         widget.set_error("Could not reach Ollama.")
 
         if "Could not reach Ollama" not in widget.status_label.text():
@@ -147,6 +216,10 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
 
         if (
             widget.title_field.text() != ""
+            or widget.title_options_field.toPlainText() != ""
+            or widget.filename_field.text() != ""
+            or widget.pinned_comment_field.toPlainText() != ""
+            or widget.thumbnail_text_field.text() != ""
             or widget.status_label.text() != ""
             or widget.additional_notes() != ""
         ):
@@ -197,7 +270,13 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
                 pass
 
             def generate(
-                self, summary, project_name, extra_notes="", chapter_days=None
+                self,
+                summary,
+                project_name,
+                extra_notes="",
+                chapter_days=None,
+                raw_transcript_text=None,
+                intelliscript_decisions=None,
             ):
                 return {
                     "title": "Test Title",
@@ -263,7 +342,13 @@ class YouTubeMetadataUiRegressionTest(BaseRegressionTest):
                     pass
 
                 def generate(
-                    self, summary, project_name, extra_notes="", chapter_days=None
+                    self,
+                    summary,
+                    project_name,
+                    extra_notes="",
+                    chapter_days=None,
+                    raw_transcript_text=None,
+                    intelliscript_decisions=None,
                 ):
                     raise OllamaError("Could not reach Ollama at test.")
 

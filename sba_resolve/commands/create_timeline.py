@@ -86,6 +86,27 @@ creates new timelines wherever the current folder happens to be,
 which the earlier bin-sync step normally leaves deep inside a
 Day/Camera bin, burying every timeline inside a random camera's
 media bin instead of the clean, predictable root location.
+
+RES-006F.7d (2026-07-23, per Gary's follow-up): a one-day
+project skips the Master step entirely - nesting a single day's
+timeline into a second "Master" timeline would just be a
+redundant timeline to manage (and cut gaps out of twice) with
+nothing actually being combined. The day's own timeline is
+returned directly in that case; Master assembly only happens
+when there are 2+ ride days.
+
+ML-072 (2026-07-24) was attempted here - applying a per-camera
+"Input LUT" clip property to Media Pool clips right after
+import - but confirmed via live testing (multiple value formats,
+including a guaranteed-valid absolute path to a real Resolve-
+bundled LUT, all rejected identically) that MediaPoolItem.
+SetClipProperty("Input LUT", ...) does not actually work via
+Resolve's scripting API, matching other users' reports of
+SetClipProperty silently failing on several clip properties.
+Reverted. See apply_camera_luts_to_timeline.py for the
+replacement approach - applying LUTs via TimelineItem.SetLUT()
+instead, as a separate action run AFTER clips are placed on a
+timeline (manually, for GoPro/DJI/Insta360 in this project).
 """
 
 from __future__ import annotations
@@ -269,23 +290,31 @@ def create_timeline(context):
     # -----------------------------------------------------
     # Assemble a Master timeline that nests every day's
     # timeline, in ride-day order, as a single review/export
-    # sequence. Each day timeline is appended as a nested clip -
-    # every Resolve Timeline also exists as an item in the Media
-    # Pool once created, so this reuses the normal
-    # AppendToTimeline mechanism rather than any special nesting
-    # API. Sequential placement uses Resolve's own "append at
-    # the end of the track" behaviour (no explicit recordFrame),
-    # so no frame math is guessed here - the Master's own
-    # ordering does the work.
+    # sequence - but only when there's more than one ride day.
+    # A one-day project has nothing to combine: a Master
+    # nesting a single day's timeline would just be a second,
+    # redundant timeline to manage (and to cut gaps out of
+    # twice), so the day's own timeline is the final result in
+    # that case.
+    #
+    # Each day timeline is appended as a nested clip - every
+    # Resolve Timeline also exists as an item in the Media Pool
+    # once created, so this reuses the normal AppendToTimeline
+    # mechanism rather than any special nesting API. Sequential
+    # placement uses Resolve's own "append at the end of the
+    # track" behaviour (no explicit recordFrame), so no frame
+    # math is guessed here - the Master's own ordering does the
+    # work.
     # -----------------------------------------------------
+
+    if len(day_timelines) <= 1:
+        return day_timelines[-1][1] if day_timelines else None
 
     master_timeline = _build_master_timeline(
         project, media_pool, base_timeline_name, day_timelines
     )
 
-    return master_timeline or (
-        day_timelines[-1][1] if day_timelines else None
-    )
+    return master_timeline or day_timelines[-1][1]
 
 
 def _build_master_timeline(

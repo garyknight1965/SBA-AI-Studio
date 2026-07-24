@@ -130,12 +130,36 @@ def main() -> int:
     print()
     print("Title:")
     print(f"  {metadata['title']}")
+
+    other_titles = (metadata.get("titles") or [])[1:]
+
+    if other_titles:
+        print()
+        print("Other title options:")
+        for title in other_titles:
+            print(f"  {title}")
+
     print()
     print("Description:")
     print(metadata["description"])
     print()
     print("Tags:")
     print(f"  {', '.join(metadata['tags'])}")
+
+    if metadata.get("filename_suggestion"):
+        print()
+        print("Suggested filename:")
+        print(f"  {metadata['filename_suggestion']}")
+
+    if metadata.get("pinned_comment"):
+        print()
+        print("Suggested pinned comment:")
+        print(f"  {metadata['pinned_comment']}")
+
+    if metadata.get("thumbnail_text"):
+        print()
+        print("Suggested thumbnail text:")
+        print(f"  {metadata['thumbnail_text']}")
 
     return 0
 

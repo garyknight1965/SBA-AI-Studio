@@ -4,10 +4,11 @@ charset-normalizer==3.4.9
 colorama==0.4.6
 idna==3.18
 iniconfig==2.3.0
-numpy==2.5.1
+numpy
 opencv-python==5.0.0.93
 packaging==26.2
 pefile==2024.8.26
+Pillow==12.1.1
 pluggy==1.6.0
 Pygments==2.20.0
 pyinstaller==6.21.0
