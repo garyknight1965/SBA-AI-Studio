@@ -16,7 +16,7 @@ The Planning Engine decides *what should happen*. The Resolve Builder executes i
 
 # Current Status
 
-v2.4.0: Groq migration, ML-066 transcript extrapolation, ML-067 max_tokens/reasoning_effort fixes, dead-code cleanup
+v2.5.0: Auto Camera LUT integration (per-camera grading of timeline clips via TimelineItem.SetLUT(), optional auto-apply after timeline creation, manual on-demand re-apply for later-synced clips)
 
 Current Milestone
 
@@ -44,14 +44,16 @@ Current
 - Gap Compression, fully configurable via `config/settings.json` (off by default)
 - Media Pool bins organized per Day > Camera
 - Resolve Timeline Builder using real `TimelinePlacement` data, with three layers of write verification (count check, per-track append, actual-position verification against Resolve's own timeline state) - can be switched off entirely via `config/settings.json` (`enable_timeline_creation`) without touching any planning/placement code
+- Auto Camera LUT application: per-camera-manufacturer LUTs (GoPro/DJI/Insta360, configured in Settings -> Camera LUTs) applied via `TimelineItem.SetLUT()` to clips already placed on a timeline, camera matched via camera profile with filename-prefix fallback. Optionally auto-applies right after each day's timeline is created (`enable_auto_camera_luts`, off by default), or can be re-run manually at any time (File -> Apply Camera LUTs to Timeline) against whatever project is currently open in Resolve - for clips synced/placed onto the timeline after the main import already ran
 - Transcript -> IntelliScript AI Editor: local Ollama model decides keep/cut and paragraph grouping from a Resolve transcript export, verbatim wording always preserved
 - IntelliScript-based chapter generation: real edited-video chapter timestamps (not raw-footage timing) with AI-generated topic labels and duration-based consolidation
-- YouTube metadata generation (title/description/tags/chapters) from ride reconstruction data (ride days, scenes, duration, cameras, GPS-derived locations) via a local Ollama model - runs independently of Resolve
-- Basic desktop GUI (PySide6): workspace tree, media browser, metadata panel, project statistics, and a local Day/Scene timeline preview - all Resolve-independent, with simplified combined Scan+Import and Transcript+IntelliScript File menu actions
+- YouTube metadata generation (title/description/tags/chapters) from ride reconstruction data (ride days, scenes, duration, cameras, GPS-derived locations, and real transcript content) via a configurable AI provider (local Ollama or cloud Groq) - runs independently of Resolve
+- Thumbnail generation: AI-suggested candidate still frames pulled from the project's own footage, composited live with overlay text and channel logo into a YouTube-ready 1280x720 PNG
+- Basic desktop GUI (PySide6): workspace tree, media browser, metadata panel, project statistics, an interactive map (GPS pins/route), and a local Day/Scene timeline preview - all Resolve-independent, with simplified combined Scan+Import and Transcript+IntelliScript File menu actions
 - Resolve scripting module auto-located (env var / config / OS default paths), instead of depending on machine-wide setup outside this project
 - One Resolve timeline PER RIDE DAY (e.g. "Test Project Day 1 - 2026-07-01"), instead of one flat "Master" timeline for the whole project - each day's clips, tracks, and markers are rebased to that day's own timeline independently
 - A "<project> Master" timeline is then assembled automatically, nesting every day's timeline into it in order as a single combined review/export sequence
-- Regression suite: 42+ tests, fully platform-independent (no hardcoded machine-specific paths)
+- Regression suite: 45+ tests, fully platform-independent (no hardcoded machine-specific paths)
 
 In progress
 
@@ -70,8 +72,7 @@ Known open issue
 
 Planned (later, per the AI Roadmap)
 
-- Thumbnail suggestions, SEO tags/chapters, story analysis, highlight detection
-- Cloud AI as an optional alternative to local Ollama
+- SEO tags/chapters, story analysis, highlight detection
 - Single-executable packaging (PyInstaller, bundle ExifTool; Resolve/Ollama stay separate installs)
 - ML-047: Auto-cut preview from IntelliScript decisions (reviewable list of proposed cuts/timecodes, preview-only before any Resolve API auto-cutting)
 
@@ -85,11 +86,11 @@ Planned (later, per the AI Roadmap)
 +-- run_regression.py               - regression suite entry point
 |
 +-- config
-|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path)
+|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path, Camera LUTs)
 |
 +-- sba_resolve
 |   +-- core                        - Planning Engine, models, metadata/timestamp resolution, services
-|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, etc.)
+|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, apply_camera_luts_to_timeline, etc.)
 |   +-- media_pool                  - Media Pool bin/import services
 |   +-- ui                          - background workers
 |   +-- tools                       - feature-specific test/diagnostic scripts
@@ -109,7 +110,7 @@ Activate your virtual environment, then:
 python start.py
 ```
 
-This launches the PySide6 desktop GUI. Scanning, validation, and Planning Engine steps run independently of Resolve; the Resolve connection (project creation, bin sync, media import, timeline creation) only happens when you trigger a Resolve import from the GUI, and only if `enable_timeline_creation` is `true` in `config/settings.json`.
+This launches the PySide6 desktop GUI. Scanning, validation, and Planning Engine steps run independently of Resolve; the Resolve connection (project creation, bin sync, media import, timeline creation, camera LUT application) only happens when you trigger a Resolve import from the GUI, and only if `enable_timeline_creation` is `true` in `config/settings.json`.
 
 For YouTube metadata generation only (no Resolve needed at all):
 
@@ -117,7 +118,7 @@ For YouTube metadata generation only (no Resolve needed at all):
 python generate_youtube_metadata.py "D:\Movies\your-ride-folder"
 ```
 
-Requires a local Ollama instance running (`ollama serve`) with a model pulled (`ollama pull llama3.2`).
+Requires a local Ollama instance running (`ollama serve`) with a model pulled (`ollama pull llama3.2`), or a configured Groq API key.
 
 ---
 
@@ -141,7 +142,7 @@ Resolve Context
 |
 v
 Resolve Builder Commands
-(create_timeline, sync_bins, ...)
+(create_timeline, sync_bins, apply_camera_luts_to_timeline, ...)
 
 ---
 
@@ -168,11 +169,11 @@ git commit (task-ID referenced in the message)
 +-- run_regression.py               - regression suite entry point
 |
 +-- config
-|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path)
+|   +-- settings.json               - user-editable settings (Gap Compression, timeline creation toggle, Resolve module path, ExifTool path, Camera LUTs)
 |
 +-- sba_resolve
 |   +-- core                        - Planning Engine, models, metadata/timestamp resolution, services
-|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, etc.)
+|   +-- commands                    - Resolve Builder commands (create_timeline, sync_bins, apply_camera_luts_to_timeline, etc.)
 |   +-- media_pool                  - Media Pool bin/import services
 |   +-- ui                          - background workers
 |   +-- tools                       - feature-specific test/diagnostic scripts
@@ -202,7 +203,7 @@ git commit (task-ID referenced in the message)
 
 Status
 
-In active development - core Ride Reconstruction pipeline complete, structural Resolve-output work (per-day timelines, real multicam clips) still open, multi-camera audio-sync (ML-054) in progress.
+In active development - core Ride Reconstruction pipeline complete, structural Resolve-output work (real multicam clips) still open, multi-camera audio-sync (ML-054) in progress.
 
 Regression suite: run `python run_regression.py` before every commit
 (`--core` / `--ui` / `--resolve` / `--all` modes available; GUI-dependent

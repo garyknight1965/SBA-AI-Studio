@@ -1,8 +1,8 @@
 # SBA AI Studio Roadmap
 
-Version: 2.1.0
+Version: 2.5.0
 
-Last refreshed: 2026-07-23. See `CHANGELOG.md` for the detailed, dated
+Last refreshed: 2026-07-24. See `CHANGELOG.md` for the detailed, dated
 history behind every item below, and `docs/Architecture.md` for the
 Planning Engine / Resolve Builder boundary these milestones respect.
 
@@ -77,7 +77,8 @@ Timeline Builder
 
 Status
 
-Mostly complete - one timeline per ride day now shipped; real multicam clip creation still open
+Mostly complete - one timeline per ride day and Auto Camera LUTs now
+shipped; real multicam clip creation still open
 
 Deliverables
 
@@ -88,6 +89,18 @@ Deliverables
 - Clip Placement - done (real `TimelinePlacement` data, three layers of write verification)
 - One Resolve timeline PER RIDE DAY - **done** (2026-07-23). Each day builds its own independent timeline (e.g. "Test Project Day 1 - 2026-07-01"), with placements and markers rebased to that day's own earliest clip rather than the whole project's. `PlanningResult` itself stays project-wide; the split happens in `RideDayGrouper` at the Resolve Builder boundary.
 - Multicam Support - partial: overlap window detection + separate tracks are done; real Resolve multicam *clip* creation is not yet built
+- **Auto Camera LUT application - done** (2026-07-24). Per-camera-
+  manufacturer LUTs applied via `TimelineItem.SetLUT()` to clips
+  already placed on a timeline, camera matched via camera profile with
+  filename-prefix fallback. Optionally runs automatically right after
+  each day's timeline is created (config-gated, off by default), and
+  can always be re-run manually against whatever project is currently
+  open in Resolve - for clips synced/placed onto the timeline after
+  the main import already ran (e.g. multicam clips left for manual
+  sync). An earlier Media-Pool-level approach (`SetClipProperty(
+  "Input LUT", ...)`, applied before clips reach a timeline at all) was
+  attempted and reverted - confirmed not actually supported by
+  Resolve's scripting API despite returning success.
 
 Known gap (highest priority open item)
 
@@ -153,7 +166,7 @@ Partial
 Goals
 
 - YouTube Publishing - metadata generation (title/description/tags/chapters) is done; actual publishing/upload automation is not started
-- Thumbnail Generation - not started
+- Thumbnail Generation - done (AI candidate-frame suggestion + text/logo compositing, ML-061-064)
 - Description Generation - done, as part of YouTube metadata generation
 - SEO - tag generation done; broader SEO work not started
 - Social Media Integration - not started
@@ -174,7 +187,9 @@ creator in control of every creative decision.
 In order, per the most recent architecture review:
 
 1. Regression reliability and environment diagnostics - **done** (`--core`/`--ui`/`--resolve` modes, GUI dependency preflight)
-2. Documentation/version cleanup - **in progress** (this document, `CHANGELOG.md`, `pyproject.toml`, `requirements.txt` encoding all refreshed; retired the old `Master_Development_Roadmap.md` to `docs/ADR/` as historical)
-3. One Resolve timeline per ride day (see Milestone 4 above)
-4. Harden the unsynced-multicam placeholder workflow (track naming, markers, sync report)
-5. Deterministic scene-fact extraction, as groundwork for future AI-generated scene labels (see Milestone 5 above)
+2. Documentation/version cleanup - **done** (this document, `CHANGELOG.md`, `pyproject.toml`, `requirements.txt` encoding all refreshed; retired the old `Master_Development_Roadmap.md` to `docs/ADR/` as historical)
+3. One Resolve timeline per ride day (see Milestone 4 above) - **done**
+4. Auto Camera LUT application (see Milestone 4 above) - **done**
+5. Harden the unsynced-multicam placeholder workflow (track naming, markers, sync report)
+6. Deterministic scene-fact extraction, as groundwork for future AI-generated scene labels (see Milestone 5 above)
+7. Real Resolve multicam clip creation (see Milestone 4's known gap above)

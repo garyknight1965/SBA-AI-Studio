@@ -1,6 +1,93 @@
 # Changelog
 
 All notable changes to SBA AI Studio are documented here.
+
+## 2026-07-24 (v2.5.0: Auto Camera LUT integration)
+
+### Added
+- **Auto Camera LUT application** - per-camera-manufacturer LUTs (GoPro/
+  DJI/Insta360, configured in Settings -> Camera LUTs, same shared
+  `camera_luts` config value already in use) are now applied via
+  `TimelineItem.SetLUT()` to clips already placed on a timeline. Camera
+  is matched via the clip's known camera profile, falling back to
+  filename-prefix detection (GoPro `GH`/`GX`/`GP`, DJI `DJI_`, Insta360
+  `VID_`/`INS_`) when no profile is available. Clips already carrying
+  the correct LUT are skipped rather than reapplied; a manufacturer with
+  no LUT configured is left untouched.
+- New Settings -> Camera LUTs checkbox, "Auto-apply after timeline
+  creation" (`enable_auto_camera_luts`, off by default) - when on, LUTs
+  are applied automatically as a new pipeline step immediately after
+  each ride day's timeline is created.
+- New File menu action, "Apply Camera LUTs to Timeline" - re-runs just
+  the LUT step on demand, against whatever project is currently open in
+  Resolve, without re-running the whole Scan/Import pipeline. For
+  clips manually synced/placed onto the timeline *after* the main
+  import already ran (e.g. HERO8 Black multicam clips left as "Manual
+  Sync Required", since audio sync is off by default) - those clips
+  weren't on the timeline yet when the automatic pass (if enabled) ran
+  the first time.
+- Both the automatic and manual paths report a summary (Applied /
+  Already Correct / Skipped / Failed) plus a full per-clip console log,
+  surfaced in the GUI via the same "Show Details..." pattern already
+  used by Import to Resolve.
+
+### Fixed
+- A prior attempt at camera-LUT application (documented internally as
+  "ML-072") applied LUTs to Media Pool clips via
+  `MediaPoolItem.SetClipProperty("Input LUT", ...)`, intending to grade
+  footage before it was ever placed on a timeline. Live testing
+  confirmed Resolve's scripting API does not actually apply the value
+  via that call (it can return success while silently having no
+  effect, matching other users' reports of `SetClipProperty` failing
+  silently on several properties) - that approach was reverted. The
+  `camera_luts` config value itself was kept, since it's just data;
+  what consumes it is now the working, timeline-level mechanism above.
+- Fixed a mangled-encoding bug in the LUT-application console output
+  (garbled bytes instead of a real checkmark/cross) - now prints plain
+  `[OK]`/`[FAIL]`.
+
+### Notes
+- Getting a good grade depends on using each camera's own correct LUT
+  for its actual color profile (e.g. GoPro's Protune Flat-to-Rec.709,
+  DJI's D-Log-to-Rec.709, Insta360's own Log-to-Rec.709) rather than a
+  generic LUT built for a different camera's log curve - Resolve's
+  bundled Blackmagic Design/ACES LUTs are not a substitute for a
+  camera-specific one.
+- The value configured for each camera must match Resolve's own LUT
+  browser exactly, including folder-name capitalization - Resolve's LUT
+  catalog matching is case-sensitive. Using the Settings dialog's
+  "Browse..." button (which reads the real on-disk path) avoids typos
+  that a hand-typed value can introduce.
+
+## 2026-07-24 (v2.4.0: Groq migration, ML-066, ML-067, dead-code cleanup)
+
+### Added
+- ML-066: YouTube metadata generation now draws on real transcript
+  content, not just a ride summary - the kept speech segments (per
+  IntelliScript's decisions) are extracted and fed into the prompt as
+  real spoken content the model can draw specific topics, moments, and
+  phrasing from. Falls back to the prior ride-summary-only behaviour if
+  no transcript/IntelliScript result is available for the project yet.
+
+### Fixed
+- ML-067: `json_validate_failed` errors on IntelliScript generation
+  (long transcripts, one decision object per segment) traced to
+  response truncation - `groq_provider.py` never set an explicit
+  `max_tokens`, relying on Groq's own smaller default ceiling. Fixed
+  with an explicit token limit and model-aware `reasoning_effort`
+  handling (since reasoning tokens on models like gpt-oss-* eat into
+  the same budget as the actual JSON answer).
+- HTTP 403/Cloudflare "bad bot" block from urllib's default User-Agent
+  header - fixed with an explicit `User-Agent: SBA-AI-Studio/1.0`.
+
+### Removed
+- Dead code cleanup: an unused duplicate `gpx_gps_loader.py`, the
+  abandoned Graphics sprint (Power Bins confirmed unreachable via
+  Resolve's scripting API), and the Export Cut List + chapter title
+  card features (both explicitly closed - the underlying word-clipping
+  problem was solved by a prompt-editing fix instead, and chapter
+  cards were blocked on a manual Fusion template and no longer wanted).
+
 ## 2026-07-23 (ML-064: thumbnail text style - Barlow Condensed ExtraBold + drop shadow)
 
 ### Changed
@@ -321,14 +408,14 @@ All notable changes to SBA AI Studio are documented here.
 ## 2026-07-21
 
 ### Added
-- **Groq AI provider** as an alternative to Ollama — cloud-based, no local hardware needed, noticeably faster. Configurable in Settings → AI Provider.
-- **Editable IntelliScript prompt guidance** — the editorial instructions the AI uses for keep/cut decisions are now user-editable in Settings → IntelliScript Prompt, with a Reset to Default option.
-- **Real road-following map routing** via OpenRouteService — replaces the straight pin-to-pin line with an actual road route when an API key is configured in Settings → Map. Falls back to the original straight-line behavior if no key is set or the route can't be fetched.
+- **Groq AI provider** as an alternative to Ollama â€” cloud-based, no local hardware needed, noticeably faster. Configurable in Settings â†’ AI Provider.
+- **Editable IntelliScript prompt guidance** â€” the editorial instructions the AI uses for keep/cut decisions are now user-editable in Settings â†’ IntelliScript Prompt, with a Reset to Default option.
+- **Real road-following map routing** via OpenRouteService â€” replaces the straight pin-to-pin line with an actual road route when an API key is configured in Settings â†’ Map. Falls back to the original straight-line behavior if no key is set or the route can't be fetched.
 - Console output from Resolve import is now visible in the GUI via a "Show Details..." expander on the Import to Resolve dialog, instead of console-only.
 
 ### Fixed
 - Ollama request timeout raised from 120s to 300s to accommodate longer transcript prompts.
-- Media Browser columns no longer get squeezed unreadably when the dock is narrow — the Filename column now absorbs available space instead of the shorter columns.
+- Media Browser columns no longer get squeezed unreadably when the dock is narrow â€” the Filename column now absorbs available space instead of the shorter columns.
 - Settings dialog is now scrollable, so it no longer grows taller than the screen as more sections are added.
 ## [Unreleased]
 
