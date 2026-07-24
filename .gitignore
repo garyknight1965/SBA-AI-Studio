@@ -114,3 +114,7 @@ build/
 config/settings.json
 
 config/settings.json
+
+*.zip
+
+*.zip

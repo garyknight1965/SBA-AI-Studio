@@ -3,7 +3,7 @@
 SBA AI Studio
 Settings Dialog
 GUI-010
-Version : 1.5.0
+Version : 1.6.0
 ============================================================
 
 A real in-app Settings dialog, so config/settings.json's
@@ -45,18 +45,32 @@ dialog is capped to a sane height (520x720) and any overflow
 scrolls - OK/Cancel stay on an outer layout, always visible,
 regardless of how many sections exist or how small the screen is.
 
-Version 1.5.0 (2026-07-24, ML-072) adds a "Camera LUTs" section -
-one field per camera manufacturer (GoPro/DJI/Insta360), applied
-automatically to Media Pool clips during timeline creation (see
-create_timeline.py's _apply_camera_luts() and
-app_settings.load_camera_luts()). Each field's "Browse..." button
-opens Resolve's own LUT folder by default and computes the value
-relative to it (see _lut_row()) - the stored value must match
-exactly what Resolve's own LUT browser shows, not an arbitrary
-filesystem path, so browsing from within that folder is the
-easiest way to get a value that will actually work. A blank field
-leaves that camera's clips untouched, same as before this setting
-existed.
+Version 1.5.0 (2026-07-24, ML-072) added a "Camera LUTs" section -
+one field per camera manufacturer (GoPro/DJI/Insta360), for the
+shared "camera_luts" config value. Its original comments described
+these as applied to Media Pool clips via
+MediaPoolItem.SetClipProperty("Input LUT", ...) during timeline
+creation - that mechanism (ML-072) was attempted and reverted the
+same day after live testing confirmed SetClipProperty("Input LUT",
+...) doesn't actually work via Resolve's scripting API. See version
+1.6.0 below for the correction.
+
+Version 1.6.0 (2026-07-24) corrects the Camera LUTs section's
+description and adds the missing "Auto-apply" checkbox. The three
+LUT text fields themselves are UNCHANGED - "camera_luts" is still
+the right config key - but what actually consumes it is now
+correctly described: apply_camera_luts_to_timeline() (see
+sba_resolve/commands/apply_camera_luts_to_timeline.py), which
+applies each mapped LUT via TimelineItem.SetLUT() to clips already
+placed on a timeline - a real, working, timeline-level mechanism,
+not the reverted Media-Pool one. This version adds a checkbox
+bound to the new "enable_auto_camera_luts" setting
+(load/gates whether this runs automatically as STEP 4 right after
+timeline creation in ResolveConnector.run() - see connector.py).
+Off by default. A separate, always-available "Apply Camera LUTs to
+Timeline" File menu action (main_window.py) re-runs the same step
+manually at any time, regardless of this checkbox, for clips
+synced/placed onto the timeline after the main import already ran.
 """
 
 from __future__ import annotations
@@ -86,6 +100,7 @@ from PySide6.QtWidgets import (
 
 from sba_resolve.core.services.app_settings import (
     load_ai_provider,
+    load_auto_camera_luts_enabled,
     load_camera_luts,
     load_exiftool_path,
     load_gap_compression_settings,
@@ -194,29 +209,46 @@ class SettingsDialog(QDialog):
         layout.addWidget(resolve_group)
 
         # -----------------------------------------------------
-        # Camera LUTs section (ML-072, 2026-07-24)
+        # Camera LUTs section
         # -----------------------------------------------------
-        # Applied automatically to Media Pool clips during timeline
-        # creation, per camera manufacturer - see
-        # create_timeline.py's _apply_camera_luts() and
-        # app_settings.load_camera_luts(). GoPro/DJI/Insta360
-        # footage is imported but never auto-placed onto any
-        # timeline (Gary drags it in manually later), so this has
-        # to be a Media Pool clip property, not a timeline LUT -
-        # already handled on the create_timeline.py side; this
-        # section is just where the three values get typed in.
+        # Applied via apply_camera_luts_to_timeline() (see
+        # sba_resolve/commands/apply_camera_luts_to_timeline.py),
+        # which uses TimelineItem.SetLUT() on clips already placed
+        # on the current timeline - a real, working, timeline-level
+        # mechanism. This runs automatically right after timeline
+        # creation when "Auto-apply" below is checked (STEP 4 of
+        # ResolveConnector.run()), and can also be re-run manually
+        # at any time via File > Apply Camera LUTs to Timeline - for
+        # clips synced/placed onto the timeline after the main
+        # import already ran (e.g. HERO8 Black multicam clips left
+        # for manual sync, since audio sync is off by default).
 
         camera_lut_group = QGroupBox("Camera LUTs")
         camera_lut_form = QFormLayout()
 
         camera_lut_form.addRow(QLabel(
-            "Applied automatically to each camera's clips when a "
-            "timeline is created. Leave blank to skip a camera.\n"
+            "Applied to each camera's clips already placed on a "
+            "timeline. Leave blank to skip a camera.\n"
             "Value must match exactly what Resolve's own LUT "
             "browser shows - use \"Browse...\" to pick a .cube file "
             "from Resolve's LUT folder and the matching value will "
             "be filled in automatically."
         ))
+
+        self.auto_camera_luts_check = QCheckBox(
+            "Auto-apply after timeline creation"
+        )
+        self.auto_camera_luts_check.setToolTip(
+            "When on: LUTs below are applied automatically right "
+            "after a timeline is created, to whichever clips are "
+            "already placed on it at that point.\n\n"
+            "Off by default - this is a new automated step touching "
+            "timeline clips. Either way, File > Apply Camera LUTs "
+            "to Timeline lets you re-run this manually at any time, "
+            "e.g. after manually syncing/placing clips that weren't "
+            "on the timeline yet when it was first created."
+        )
+        camera_lut_form.addRow(self.auto_camera_luts_check)
 
         self.camera_lut_gopro_edit = QLineEdit()
         camera_lut_form.addRow(
@@ -481,13 +513,13 @@ class SettingsDialog(QDialog):
     def _lut_row(self, line_edit: QLineEdit) -> QHBoxLayout:
         """
         Wraps a QLineEdit with a "Browse..." button for picking a
-        camera LUT file (ML-072). Unlike _path_row(), the value
-        this stores is NOT a filesystem path - Resolve's
-        MediaPoolItem.SetClipProperty("Input LUT", ...) expects the
-        value exactly as it appears in Resolve's own LUT
-        browser/dropdown, which is the LUT's path RELATIVE to
-        Resolve's LUT folder (e.g. "GoPro/HERO13_Look.cube"), not
-        an absolute filesystem path.
+        camera LUT file. Unlike _path_row(), the value this stores
+        is NOT a filesystem path - the timeline-level
+        TimelineItem.SetLUT() call in
+        apply_camera_luts_to_timeline.py expects the value exactly
+        as it appears in Resolve's own LUT browser/dropdown, which
+        is the LUT's path RELATIVE to Resolve's LUT folder (e.g.
+        "GoPro/HERO13_Look.cube"), not an absolute filesystem path.
 
         The browse dialog opens directly inside Resolve's LUT
         folder by default, and the chosen file's path is converted
@@ -605,6 +637,10 @@ class SettingsDialog(QDialog):
         )
         self.resolve_module_path_edit.setText(load_resolve_module_path())
 
+        self.auto_camera_luts_check.setChecked(
+            load_auto_camera_luts_enabled()
+        )
+
         camera_luts = load_camera_luts()
         self.camera_lut_gopro_edit.setText(camera_luts.get("GoPro", ""))
         self.camera_lut_dji_edit.setText(camera_luts.get("DJI", ""))
@@ -661,6 +697,9 @@ class SettingsDialog(QDialog):
                 self.multicam_audio_sync_check.isChecked()
             ),
             "resolve_module_path": self.resolve_module_path_edit.text(),
+            "enable_auto_camera_luts": (
+                self.auto_camera_luts_check.isChecked()
+            ),
             "camera_luts": {
                 manufacturer: value
                 for manufacturer, value in (

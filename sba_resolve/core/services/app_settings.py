@@ -3,7 +3,7 @@
 SBA AI Studio
 App Settings Loader
 ML-019-001
-Version : 1.7.0
+Version : 1.8.0
 ============================================================
 
 Loads user-configurable app settings from config/settings.json,
@@ -25,6 +25,7 @@ Currently exposes:
     load_youtube_metadata_guidance() -> str
     load_openrouteservice_api_key() -> str
     load_camera_luts() -> dict[str, str]
+    load_auto_camera_luts_enabled() -> bool
     load_exiftool_path() -> str
     load_thumbnail_logo_path() -> str
     load_resolve_module_path() -> str
@@ -126,16 +127,40 @@ entirely, set it to an empty string:
         "ollama_fallback_model": ""
     }
 
-Version 1.7.0 (2026-07-24, ML-072) adds load_camera_luts() - a
-per-camera-manufacturer "Input LUT" mapping applied automatically
-to Media Pool clips during timeline creation (see
-_apply_camera_luts() in create_timeline.py). GoPro/DJI/Insta360
-footage in this project is imported into Resolve but NOT
-auto-placed onto any timeline - Gary drags it in manually later -
-so the LUT is set on the Media Pool clip itself (via
-MediaPoolItem.SetClipProperty("Input LUT", ...)), not via
-TimelineItem.SetLUT() (which only works once a clip is already
-sitting on a timeline). Set like:
+Version 1.7.0 (2026-07-24, ML-072) added load_camera_luts() - a
+per-camera-manufacturer "Input LUT" mapping originally intended
+to be applied automatically to Media Pool clips during timeline
+creation, via MediaPoolItem.SetClipProperty("Input LUT", ...).
+
+CORRECTION (2026-07-24): that Media-Pool-level mechanism (ML-072)
+was attempted in create_timeline.py and reverted - live testing
+confirmed SetClipProperty("Input LUT", ...) does not actually
+work via Resolve's scripting API (silently fails regardless of
+value, matching other users' reports of SetClipProperty failing
+silently on several clip properties). load_camera_luts() itself
+is NOT dead, though - it's the shared config reader used by the
+real, working LUT mechanism below.
+
+Version 1.8.0 (2026-07-24) adds load_auto_camera_luts_enabled().
+The actual working camera-LUT mechanism is timeline-level, not
+Media-Pool-level: sba_resolve/commands/apply_camera_luts_to_timeline.py
+applies LUTs via TimelineItem.SetLUT()/GetLUT() to clips already
+placed on a timeline, reading the same load_camera_luts() mapping.
+This new setting gates whether ResolveConnector.run() calls that
+command automatically right after timeline creation, matching the
+enable_timeline_creation / enable_multicam_audio_sync gating
+pattern already used for other optional pipeline steps. Set:
+
+    {
+        "enable_auto_camera_luts": true
+    }
+
+OFF by default - this is a new pipeline step touching timeline
+clips, so it stays opt-in until confirmed working on Gary's real
+Resolve setup, matching how enable_multicam_audio_sync also
+defaults to OFF for a new/unproven automated step.
+
+The "camera_luts" config shape itself is unchanged:
 
     {
         "camera_luts": {
@@ -149,12 +174,10 @@ Each value must be the LUT exactly as it appears in Resolve's own
 LUT browser/dropdown (Project Settings > Color Management >
 Lookup Tables) - the LUT file has to already be installed under
 Resolve's recognized LUT folder for the reference to mean
-anything; SetClipProperty() can return True even for a value
-Resolve doesn't actually recognize, so a successful write doesn't
-guarantee the grade visibly changed. A manufacturer with no entry
-(or omitted "camera_luts" entirely) is left untouched - this is
-opt-in per camera, matching CameraManufacturer's values exactly
-("GoPro", "DJI", "Insta360", "Sony", "Canon").
+anything. A manufacturer with no entry (or omitted "camera_luts"
+entirely) is left untouched - this is opt-in per camera, matching
+CameraManufacturer's values exactly ("GoPro", "DJI", "Insta360",
+"Sony", "Canon").
 """
 
 from __future__ import annotations
@@ -614,9 +637,11 @@ def load_openrouteservice_api_key(path: Path | None = None) -> str:
 def load_camera_luts(path: Path | None = None) -> dict[str, str]:
     """
     Reads "camera_luts" from config/settings.json - a per-camera-
-    manufacturer "Input LUT" mapping (ML-072), applied to Media
-    Pool clips during timeline creation (see _apply_camera_luts()
-    in create_timeline.py).
+    manufacturer LUT reference mapping, used by the timeline-level
+    apply_camera_luts_to_timeline() command (see
+    sba_resolve/commands/apply_camera_luts_to_timeline.py), which
+    applies each mapped LUT via TimelineItem.SetLUT() to clips
+    already placed on a timeline.
 
     Returns {} (no LUTs configured - clips are left untouched, the
     original behaviour before this setting existed) if the file is
@@ -649,6 +674,36 @@ def load_camera_luts(path: Path | None = None) -> dict[str, str]:
         and isinstance(lut_reference, str)
         and lut_reference.strip()
     }
+
+
+def load_auto_camera_luts_enabled(path: Path | None = None) -> bool:
+    """
+    Reads "enable_auto_camera_luts" from config/settings.json -
+    gates whether ResolveConnector.run() automatically calls
+    apply_camera_luts_to_timeline() right after timeline creation.
+
+    Returns False (OFF, opt-in) if the file is missing, isn't
+    valid JSON, doesn't contain that key, or the value isn't a
+    plain bool - this never raises. OFF by default since this is
+    a new automated step touching timeline clips, matching how
+    load_multicam_audio_sync_enabled() also defaults to OFF for a
+    new/unproven automated step - rather than
+    load_timeline_creation_enabled()'s default-ON, which reproduces
+    long-standing prior behaviour instead of introducing something
+    new.
+    """
+
+    settings_path = path or DEFAULT_SETTINGS_PATH
+
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    value = raw.get("enable_auto_camera_luts", False)
+
+    if not isinstance(value, bool):
+        return False
 
     return value
 

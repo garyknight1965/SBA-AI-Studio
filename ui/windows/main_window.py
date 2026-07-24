@@ -33,7 +33,7 @@ from ui.workers.location_grouping_worker import LocationGroupingWorker
 from ui.workers.route_worker import RouteWorker
 from ui.workers.thumbnail_suggestion_worker import ThumbnailSuggestionWorker
 from ui.workers.youtube_metadata_worker import YouTubeMetadataWorker
-from sba_resolve.connector import ResolveConnector
+from sba_resolve.connector import ResolveConnector, apply_camera_luts_now
 
 
 class MainWindow(QMainWindow):
@@ -70,6 +70,19 @@ class MainWindow(QMainWindow):
     which reads the AI Provider choice (Ollama or Groq) straight
     from Settings itself. load_ollama_model() is no longer imported
     here since nothing in this file needs it anymore.
+
+    Auto Camera LUTs (2026-07-24): the automatic pass (STEP 4 of
+    the main pipeline, gated by "enable_auto_camera_luts") runs
+    inside import_to_resolve() via ResolveConnector.run() - no
+    separate wiring needed here for that part. This file adds a
+    second, manual entry point - "Apply Camera LUTs to Timeline" -
+    for re-running just that one step afterward, against whatever
+    project is currently open in Resolve. This is for clips that
+    get manually synced/placed onto the timeline AFTER the main
+    import (e.g. HERO8 Black multicam clips left as "Manual Sync
+    Required", since audio sync is off by default) - those clips
+    never went through STEP 4 the first time, since they weren't
+    on the timeline yet when it ran.
     """
 
     def __init__(self):
@@ -151,6 +164,14 @@ class MainWindow(QMainWindow):
         # "Scan && Import to Resolve" flow.
         file_menu.addAction("Scan Project", self.scan_project)
         file_menu.addAction("Import to Resolve", self.import_to_resolve)
+        # Auto Camera LUTs (2026-07-24): manual re-run of just the
+        # LUT step, for clips manually synced/placed onto the
+        # timeline after the main import already ran (see class
+        # docstring).
+        file_menu.addAction(
+            "Apply Camera LUTs to Timeline",
+            self.apply_camera_luts_to_timeline,
+        )
         file_menu.addSeparator()
         file_menu.addAction(
             "Generate YouTube Metadata", self.generate_youtube_metadata
@@ -507,6 +528,70 @@ class MainWindow(QMainWindow):
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Critical)
             msg_box.setWindowTitle("Resolve Import Error")
+            msg_box.setText(str(exc))
+            captured = console_output.getvalue()
+            if captured:
+                msg_box.setDetailedText(captured)
+            msg_box.exec()
+
+    def apply_camera_luts_to_timeline(self):
+        """
+        Auto Camera LUTs (2026-07-24), manual entry point. Re-runs
+        just the LUT-application step (the same one that runs
+        automatically as STEP 4 of import_to_resolve(), when
+        "enable_auto_camera_luts" is on) against whatever project
+        is CURRENTLY OPEN in Resolve - via
+        connector.apply_camera_luts_now(), which does not create or
+        load a project by name, only acts on one already open.
+
+        For clips that get manually synced/placed onto the timeline
+        AFTER the main import already ran (e.g. HERO8 Black
+        multicam clips left as "Manual Sync Required", since audio
+        sync is off by default) - those clips were never on the
+        timeline when STEP 4 ran the first time, so they never got
+        graded. This lets Gary re-grade just the newly-placed clips
+        without re-running the whole Scan/Import pipeline.
+
+        Runs synchronously (no worker thread), matching
+        import_to_resolve()'s pattern - a direct, short Resolve
+        scripting call, not a slow model call.
+        """
+
+        if not getattr(self.workspace, "media", None):
+            QMessageBox.information(
+                self,
+                "Nothing to apply",
+                "Scan the project before applying camera LUTs.",
+            )
+            return
+
+        console_output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(console_output):
+                counts = apply_camera_luts_now(list(self.workspace.media))
+
+            self.statusBar().showMessage(
+                f"Camera LUTs applied: {counts['applied']} applied, "
+                f"{counts['already']} already correct, "
+                f"{counts['skipped']} skipped, {counts['failed']} failed."
+            )
+
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setWindowTitle("Camera LUTs Applied")
+            msg_box.setText(
+                f"Applied: {counts['applied']}\n"
+                f"Already correct: {counts['already']}\n"
+                f"Skipped: {counts['skipped']}\n"
+                f"Failed: {counts['failed']}"
+            )
+            msg_box.setDetailedText(console_output.getvalue())
+            msg_box.exec()
+
+        except Exception as exc:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setWindowTitle("Camera LUT Error")
             msg_box.setText(str(exc))
             captured = console_output.getvalue()
             if captured:

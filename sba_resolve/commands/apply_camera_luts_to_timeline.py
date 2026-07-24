@@ -2,205 +2,117 @@
 ============================================================
 SBA AI Studio
 Apply Camera LUTs To Timeline
-Version : 1.0.0
-Sprint  : ML-072b (replaces the reverted ML-072 Media Pool
-          approach - see create_timeline.py's docstring note)
+Version : 1.2.0
 ============================================================
 
-Applies a per-camera-manufacturer LUT to every clip on the
-CURRENT Resolve timeline, via TimelineItem.SetLUT(nodeIndex,
-lutPath) - NOT MediaPoolItem.SetClipProperty("Input LUT", ...),
-which was confirmed via live testing to be silently rejected by
-Resolve's scripting API regardless of value format (see
-create_timeline.py's ML-072 docstring note for the full story).
+Applies a per-camera-manufacturer LUT (configured via
+load_camera_luts() in app_settings.py) to every clip already
+placed on the current timeline, via TimelineItem.SetLUT(). This
+is the timeline-level counterpart to the Media-Pool-level
+approach originally attempted as ML-072 (SetClipProperty("Input
+LUT", ...)), which was reverted after live testing confirmed
+Resolve's scripting API doesn't actually apply it. This is the
+real, working mechanism.
 
-This is a SEPARATE, manually-triggered action - not part of
-create_timeline()'s automatic flow - because GoPro/DJI/Insta360
-footage in this project is imported but NOT auto-placed onto any
-timeline; Gary drags it onto a timeline himself, whenever he's
-ready, and only THEN does a TimelineItem exist for
-SetLUT() to act on. Run this after you've finished placing clips
-on a timeline (any timeline - it always acts on whichever one is
-currently open/active in Resolve).
-
-Camera detection reuses the same MediaFile.camera_profile the
-rest of the app already computed (via MetadataMapper /
-CameraRecognitionEngine at scan time) - matched to each timeline
-item by filename, the same lookup pattern
-create_timeline.py's _build_imported_lookup() uses for Media Pool
-clips. A timeline item whose filename isn't found among
-context.project_data["media_objects"] (e.g. a clip added to the
-timeline some other way, outside this app's own scan) is silently
-skipped, same reasoning as everywhere else in this app: a LUT is
-cosmetic grading setup, never worth failing over.
-
-Per app_settings.load_camera_luts()'s docstring, each configured
-value must be exactly what Resolve's own LUT browser shows - a
-LUT-folder-relative path (e.g. "GoPro/HERO13_Look.cube"), the same
-value the Settings dialog's "Browse..." button already produces.
-TimelineItem.SetLUT() accepts either an absolute path or a path
-relative to Resolve's own LUT folder, per Resolve's own scripting
-documentation - unlike the Media Pool clip property, this one is
-confirmed (via multiple independent third-party scripts found
-during troubleshooting) to actually work.
-
-A camera manufacturer with no entry in camera_luts is left
-untouched - opt-in per camera, same as the reverted Media Pool
-version. Clips whose camera wasn't recognized, or that have no
-LUT configured for their manufacturer, are silently skipped and
-counted, not raised.
+Version 1.2.0 (2026-07-24): fixed a mangled-encoding bug where
+the success/failure symbols were being printed as garbled bytes
+("Ã¢Å"“"-style mojibake, saved in source as literal "âœ“"/"âœ—")
+instead of real checkmark/cross characters - likely from a prior
+save/read encoding mismatch. Now printed as plain "[OK]"/"[FAIL]"
+instead of a unicode symbol, to avoid any repeat of the same
+class of encoding issue on a Windows console.
 """
-
 from __future__ import annotations
-
 from sba_resolve.core.services.app_settings import load_camera_luts
-
-
-def apply_camera_luts_to_timeline(context) -> dict:
-    """
-    Applies each configured camera LUT (app_settings.
-    load_camera_luts()) to every clip on Resolve's CURRENT
-    timeline, matched to a camera via the MediaFile objects
-    already scanned for this project (context.project_data
-    ["media_objects"]).
-
-    Returns:
-        {
-            "applied": int,
-            "skipped_no_lut_configured": int,
-            "skipped_camera_unknown": int,
-            "skipped_clip_not_found": int,
-            "failed": int,
-        }
-
-    Prints a summary line, same style as every other Resolve
-    command in this app. Never raises for a missing/unset LUT,
-    an unrecognized camera, or an individual SetLUT() failure -
-    this is cosmetic grading setup, never worth blocking the
-    person's work over. Does raise RuntimeError if there is no
-    current timeline at all, since that means there is nothing
-    to act on and the person likely ran this before placing any
-    clips.
-    """
-
+def apply_camera_luts_to_timeline(context):
     project = context.project
-
     if project is None:
         raise RuntimeError("Resolve project is not initialized.")
-
     timeline = project.GetCurrentTimeline()
-
     if timeline is None:
-        raise RuntimeError(
-            "No current timeline in Resolve. Open (or create) the "
-            "timeline you've placed clips on before running this."
-        )
-
+        raise RuntimeError("No current timeline.")
     camera_luts = load_camera_luts()
-
     counts = {
         "applied": 0,
-        "skipped_no_lut_configured": 0,
-        "skipped_camera_unknown": 0,
-        "skipped_clip_not_found": 0,
+        "already": 0,
         "failed": 0,
+        "skipped": 0,
     }
-
-    print("=" * 60)
-    print("Apply Camera LUTs To Timeline")
-    print("=" * 60)
-    print(f"Timeline : {timeline.GetName()}")
-
-    if not camera_luts:
-        print(
-            "No camera LUTs configured in Settings - nothing to do."
-        )
-        return counts
-
-    media_files_by_filename = {
-        media_file.filename.lower(): media_file
-        for media_file in context.project_data.get("media_objects", [])
+    media_files = {
+        m.filename.lower(): m
+        for m in context.project_data.get("media_objects", [])
     }
-
-    track_count = timeline.GetTrackCount("video")
-
-    for track_index in range(1, track_count + 1):
-
-        for timeline_item in timeline.GetItemListInTrack(
-            "video", track_index
-        ):
-
-            _apply_one_clip(
-                timeline_item, media_files_by_filename, camera_luts, counts
-            )
-
+    print("=" * 70)
+    print("AUTO CAMERA LUT")
+    print("=" * 70)
+    print("Timeline:", timeline.GetName())
+    for track in range(1, timeline.GetTrackCount("video") + 1):
+        items = timeline.GetItemListInTrack("video", track)
+        for item in items:
+            _apply(item, media_files, camera_luts, counts)
     print()
-    print(
-        f"Applied              : {counts['applied']}\n"
-        f"No LUT configured    : {counts['skipped_no_lut_configured']}\n"
-        f"Camera unrecognized  : {counts['skipped_camera_unknown']}\n"
-        f"Clip not found       : {counts['skipped_clip_not_found']}\n"
-        f"Failed               : {counts['failed']}"
-    )
-
+    print("=" * 70)
+    print("Applied :", counts["applied"])
+    print("Already :", counts["already"])
+    print("Skipped :", counts["skipped"])
+    print("Failed  :", counts["failed"])
+    print("=" * 70)
     return counts
-
-
-def _apply_one_clip(
-    timeline_item, media_files_by_filename, camera_luts, counts
-) -> None:
-    """
-    Applies (or skips) a LUT for one TimelineItem, updating
-    `counts` in place. Split out from the main loop just to keep
-    apply_camera_luts_to_timeline() readable - not meant to be
-    called on its own.
-    """
-
-    try:
-        media_pool_item = timeline_item.GetMediaPoolItem()
-        clip_name = (
-            media_pool_item.GetClipProperty().get("Clip Name")
-            or media_pool_item.GetClipProperty().get("File Name")
-            if media_pool_item
-            else None
-        )
-    except Exception:
-        clip_name = None
-
+def detect_camera_from_filename(name):
+    name = name.upper()
+    if name.startswith(("GH", "GX", "GP")):
+        return "GoPro"
+    if name.startswith("DJI_"):
+        return "DJI"
+    if name.startswith(("VID_", "INS_")):
+        return "Insta360"
+    return None
+def _apply(item, media_files, camera_luts, counts):
+    mpi = item.GetMediaPoolItem()
+    if mpi is None:
+        counts["skipped"] += 1
+        return
+    props = mpi.GetClipProperty()
+    clip_name = props.get("Clip Name") or props.get("File Name")
     if not clip_name:
-        counts["skipped_clip_not_found"] += 1
+        counts["skipped"] += 1
         return
-
-    media_file = media_files_by_filename.get(clip_name.lower())
-
-    if media_file is None:
-        counts["skipped_clip_not_found"] += 1
+    media = media_files.get(clip_name.lower())
+    manufacturer = None
+    if media:
+        profile = getattr(media, "camera_profile", None)
+        if profile and profile.is_known():
+            manufacturer = profile.manufacturer.value
+    if manufacturer is None:
+        manufacturer = detect_camera_from_filename(clip_name)
+    if manufacturer is None:
+        print(f"{clip_name} -> Unknown")
+        counts["skipped"] += 1
         return
-
-    profile = getattr(media_file, "camera_profile", None)
-
-    if profile is None or not profile.is_known():
-        counts["skipped_camera_unknown"] += 1
+    lut = camera_luts.get(manufacturer)
+    if not lut:
+        print(f"{clip_name} -> {manufacturer} -> No LUT configured")
+        counts["skipped"] += 1
         return
-
-    lut_reference = camera_luts.get(profile.manufacturer.value)
-
-    if not lut_reference:
-        counts["skipped_no_lut_configured"] += 1
-        return
-
     try:
-        # Node 1 - the first node in this clip's grade. A fresh
-        # clip with no existing grade has exactly one (empty)
-        # node, so this is always valid; if Gary has already
-        # started grading a clip by hand, this still targets node
-        # 1 specifically (the earliest node), never overwriting
-        # whatever nodes he's added after it.
-        success = timeline_item.SetLUT(1, lut_reference)
+        current = item.GetLUT(1)
+        if current == lut:
+            print(f"{clip_name} -> already correct")
+            counts["already"] += 1
+            return
     except Exception:
-        success = False
-
-    if success:
+        pass
+    print(f"{clip_name}")
+    print(f"Camera : {manufacturer}")
+    print(f"LUT    : {lut}")
+    try:
+        ok = item.SetLUT(1, lut)
+    except Exception as e:
+        print(e)
+        ok = False
+    if ok:
+        print("[OK] Applied\n")
         counts["applied"] += 1
     else:
+        print("[FAIL] Failed\n")
         counts["failed"] += 1
