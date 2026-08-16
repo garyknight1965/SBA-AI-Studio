@@ -37,6 +37,11 @@ Filename patterns implemented:
                 DJI_####.MP4 (a plain SD-card-style naming) is
                 also accepted as a secondary pattern, though
                 unconfirmed against real footage.
+                DJI_YYYYMMDDHHMMSS_####_S.MP4 (confirmed DJI
+                Flip native SD-card naming - 14-digit capture
+                timestamp, 4-digit sequence, single-letter
+                stream suffix, e.g. "_D" for the main video
+                stream).
 """
 
 from __future__ import annotations
@@ -113,6 +118,15 @@ class SourceMediaValidator:
     # recording - never the file Gary wants on the timeline.
     _DJI_FLY_CACHE_PATTERN = re.compile(
         r"^dji_fly_.*_video_cache\.mp4$", re.IGNORECASE
+    )
+
+    # DJI Flip native SD-card naming, confirmed against real
+    # footage: DJI_20260815095353_0001_D.MP4
+    # 14-digit capture timestamp (YYYYMMDDHHMMSS), 4+ digit
+    # sequence number, single-letter stream suffix (e.g. "D"
+    # for the main/default video stream).
+    _DJI_SD_TIMESTAMPED_PATTERN = re.compile(
+        r"^DJI_\d{14}_\d+_[A-Z]\.MP4$", re.IGNORECASE
     )
 
     def validate(self, media_files: Iterable) -> MediaValidationReport:
@@ -198,6 +212,9 @@ class SourceMediaValidator:
             return None
 
         if self._DJI_FLY_PATTERN.match(filename):
+            return None
+
+        if self._DJI_SD_TIMESTAMPED_PATTERN.match(filename):
             return None
 
         return (

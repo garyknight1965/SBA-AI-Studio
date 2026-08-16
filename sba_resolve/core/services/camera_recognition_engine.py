@@ -2,13 +2,14 @@
 SBA AI Studio
 Camera Recognition Engine
 CORE-010-002
-Version 1.0.2
+Version 1.1.0
+Added GoPro filename-pattern fallback for stabilized/re-encoded clips
+that have lost their original camera metadata (e.g. GoPro's own
+stabilization/cloud processing re-muxes with generic FFmpeg/Lavf
+encoders and strips Make/Model/MetaFormat tags).
 """
-
 from __future__ import annotations
-
 import re
-
 from sba_resolve.core.models.camera_profile import (
     CameraManufacturer,
     CameraProfile,
@@ -22,12 +23,20 @@ _INSTA360_FILENAME_PATTERN = re.compile(
     r"^VID_\d{8}_\d{6}_\d{2}_\d{3}(_\d{6})?\.[A-Za-z0-9]+$"
 )
 
+# Matches GoPro's native filename convention: G(X|H)<2-digit chapter><4-digit file>.ext
+#   GX010009.MP4  (HEVC/H.265, GX prefix)
+#   GH010009.MP4  (AVC/H.264, GH prefix)
+# This is the only reliable signal left once a clip has been re-encoded
+# (e.g. GoPro's own stabilization/HyperSmooth processing, cloud sync,
+# Quik exports) and no longer carries Make/Model/MetaFormat metadata.
+_GOPRO_FILENAME_PATTERN = re.compile(
+    r"^G[XH]\d{6}\.[A-Za-z0-9]+$"
+)
+
 
 class CameraRecognitionEngine:
-
     @staticmethod
     def detect(metadata: dict, source_path: str = "") -> CameraProfile:
-
         model = str(metadata.get("Model", "")).upper()
         make = str(metadata.get("Make", "")).upper()
         encoder = str(metadata.get("Encoder", "")).upper()
@@ -48,7 +57,6 @@ class CameraRecognitionEngine:
                 encoder=str(metadata.get("CompressorName", "")),
                 metaformat=meta,
             )
-
         if "DJI FLIP" in encoder:
             return CameraProfile(
                 manufacturer=CameraManufacturer.DJI,
@@ -60,7 +68,6 @@ class CameraRecognitionEngine:
                 encoder=encoder,
                 metaformat=meta,
             )
-
         if meta == "djmd" or "DJI" in make:
             return CameraProfile(
                 manufacturer=CameraManufacturer.DJI,
@@ -72,7 +79,6 @@ class CameraRecognitionEngine:
                 encoder=encoder,
                 metaformat=meta,
             )
-
         if _INSTA360_FILENAME_PATTERN.match(filename):
             return CameraProfile(
                 manufacturer=CameraManufacturer.INSTA360,
@@ -83,7 +89,6 @@ class CameraRecognitionEngine:
                 detection_method="Filename Pattern",
                 encoder=encoder,
             )
-
         if "/360/" in path or path.endswith("/360"):
             return CameraProfile(
                 manufacturer=CameraManufacturer.INSTA360,
@@ -94,5 +99,15 @@ class CameraRecognitionEngine:
                 detection_method="Folder Rule",
                 encoder=encoder,
             )
-
+        if _GOPRO_FILENAME_PATTERN.match(filename):
+            return CameraProfile(
+                manufacturer=CameraManufacturer.GOPRO,
+                model="Unknown",
+                family="Hero",
+                camera_type=CameraType.ACTION,
+                confidence=60,
+                detection_method="Filename Pattern (Metadata Stripped)",
+                encoder=encoder,
+                metaformat=meta,
+            )
         return CameraProfile()
