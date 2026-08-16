@@ -2,6 +2,23 @@
 
 All notable changes to SBA AI Studio are documented here.
 
+## 2026-08-16 (v2.5.1: DJI Flip filename support + GoPro re-encoded fallback)
+
+### Added
+- **DJI Flip native SD-card filename pattern** in `SourceMediaValidator` -
+  clips straight off the Flip's SD card (e.g.
+  `DJI_20260815095353_0001_D.MP4`: 14-digit capture timestamp, sequence
+  number, single-letter stream suffix) are now recognised as original
+  camera footage instead of being rejected as "unrecognised pattern".
+  Confirmed against real Flip footage.
+- **GoPro filename-pattern fallback** in `CameraRecognitionEngine`
+  (bumped 1.0.2 -> 1.1.0) for clips that have lost their original
+  Make/Model/MetaFormat metadata through GoPro's own stabilization or
+  cloud re-encoding (generic FFmpeg/Lavf encoder). Falls back to
+  matching the native `GX`/`GH` filename convention
+  (`G[XH]NNNNNN.ext`) at reduced confidence when metadata-based
+  detection fails.
+
 ## 2026-07-24 (v2.5.0: Auto Camera LUT integration)
 
 ### Added
